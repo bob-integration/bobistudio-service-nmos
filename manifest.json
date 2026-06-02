@@ -1,0 +1,53 @@
+{
+  "id": "nmos",
+  "label": "NMOS",
+  "nav_tab": "protocoles",
+  "tab_group": "protocoles",
+  "tab_order": 0,
+  "tab_template": "nmos/settings_tab.html",
+  "settings_keys": {
+    "nmos_enabled": {
+      "type": "bool",
+      "default": false
+    },
+    "nmos_registry_url": {
+      "type": "str",
+      "default": ""
+    },
+    "nmos_node_label": {
+      "type": "str",
+      "default": "Bobi.Studio"
+    },
+    "nmos_node_description": {
+      "type": "str",
+      "default": ""
+    },
+    "nmos_mdns_enabled": {
+      "type": "bool",
+      "default": false
+    },
+    "nmos_node_uuid": {
+      "type": "str",
+      "default": ""
+    },
+    "nmos_host_address": {
+      "type": "str",
+      "default": ""
+    },
+    "nmos_2110_enabled": {
+      "type": "bool",
+      "default": false
+    },
+    "nmos_2110_pf": {
+      "type": "str",
+      "default": ""
+    },
+    "nmos_2110_vf_count": {
+      "type": "int",
+      "default": 8
+    }
+  },
+  "version": "0.1.0",
+  "order": 0,
+  "description": "Provider NMOS IS-04/IS-05 — enregistrement Node, Devices, Receivers et Senders auprès d'un Registry RDS. Expose les endpoints Connection API IS-05 pour le routage."
+}

@@ -1,0 +1,45 @@
+<div id="protocoles-tab-nmos" class="set-tab-content">
+    <h2>Provider NMOS IS-04 / IS-05</h2>
+    <div class="form">
+        <div class="row">
+            <div class="field" style="align-self:center"><label style="display:flex; align-items:center; gap:var(--space-2)">
+                <input type="checkbox" class="ios-toggle" id="s_nmos_enabled">
+                Activer le provider NMOS
+            </label></div>
+            <div class="field" style="flex:1; min-width:320px"><label>URL du Registry RDS (vide = mode API-only)</label>
+                <input type="text" id="s_nmos_registry_url" class="wide" placeholder="http://192.0.2.x:8235"></div>
+            <div class="field"><label>
+                <input type="checkbox" class="ios-toggle" id="s_nmos_mdns">
+                Annonce mDNS (_nmos-node._tcp)
+            </label></div>
+        </div>
+        <div class="row">
+            <div class="field" style="flex:1"><label>Label du Node</label>
+                <input type="text" id="s_nmos_node_label" class="wide" value="Bobi.Studio"></div>
+            <div class="field" style="flex:2"><label>Description</label>
+                <input type="text" id="s_nmos_node_description" class="wide"></div>
+            <button class="btn btn-green" onclick="appliquerNmos()">Appliquer</button>
+        </div>
+        <div class="meta" style="margin-top:var(--space-2)">
+            Endpoints exposés sous <code>/x-nmos/node/v1.3/</code> et <code>/x-nmos/connection/v1.1/</code>.
+            Le Node + ses Devices et Receivers sont enregistrés auprès du RDS configuré, avec heartbeat 5s.
+        </div>
+    </div>
+
+    <h2>État du Node</h2>
+    <div class="form">
+        <div class="row">
+            <div class="field"><label>Statut</label>
+                <div id="nmos_status_badge" class="meta">—</div></div>
+            <div class="field"><label>Registry</label>
+                <div id="nmos_status_registry" class="meta">—</div></div>
+            <div class="field"><label>Node ID</label>
+                <div id="nmos_status_node_id" class="meta" style="font-family: var(--font-mono); font-size: 0.75em">—</div></div>
+            <div class="field"><label>Dernier heartbeat</label>
+                <div id="nmos_status_hb" class="meta">—</div></div>
+            <div class="field"><label>Devices / Receivers</label>
+                <div id="nmos_status_counts" class="meta">—</div></div>
+        </div>
+        <div id="nmos_status_error" class="meta" style="margin-top:var(--space-2); color: var(--status-stopped-fg)"></div>
+    </div>
+</div>
