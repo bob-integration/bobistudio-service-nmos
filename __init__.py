@@ -889,6 +889,7 @@ def is05_send_transportfile(sid):
     if sid not in _senders: abort(404)
     with _lock:
         vmid = _send_state[sid]["vmid"]
+        tx_idx = _send_state[sid].get("tx_idx")   # présent ⇒ sender d'un moteur MTL bi-rôle
     from app.proxmox import get_container_ip
     ip = get_container_ip(vmid)
     if not ip:
@@ -897,11 +898,17 @@ def is05_send_transportfile(sid):
         r = requests.get(f"http://{ip}:8080", timeout=2)
         if r.status_code != 200:
             return (f"metrics HTTP {r.status_code}", 503)
-        sdp = (r.json() or {}).get("sdp") or ""
+        data = r.json() or {}
     except Exception as e:
         return (f"metrics fetch failed: {e}", 503)
+    if tx_idx is not None:
+        # Moteur MTL : SDP par slot TX, exposé dans metrics.senders[].sdp (généré par le contrôleur).
+        sdp = next((s.get("sdp") for s in (data.get("senders") or [])
+                    if s.get("tx_idx") == tx_idx), "") or ""
+    else:
+        sdp = data.get("sdp") or ""
     if not sdp:
-        return ("sdp non encore disponible (ffmpeg pas démarré ?)", 404)
+        return ("sdp non encore disponible (slot TX pas câblé / pas d'émission ?)", 404)
 
     # Injection PTP : insère a=ts-refclk + a=mediaclk juste après la dernière
     # ligne d'attribut media-level (juste avant la fin du SDP). ffmpeg ne les
