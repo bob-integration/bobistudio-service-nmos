@@ -559,6 +559,14 @@ def rebuild_model():
         _senders.clear();   _senders.update(new_senders)
         _sources.clear();   _sources.update(new_sources)
         _flows.clear();     _flows.update(new_flows)
+        # _build_receiver_resource met subscription.active=False par défaut → re-synchroniser depuis
+        # l'état IS-05 DURABLE (_recv_state.active) : un récepteur abonné (master_enable ou SDP actif)
+        # doit le rester à travers les rebuilds, sinon le badge passe « idle » alors que le flux
+        # arrive (cas vu sur le moteur MTL : les ops TX déclenchent des rebuilds qui resettaient le RX).
+        for rid, rc in _receivers.items():
+            _st = (_recv_state.get(rid) or {}).get("active") or {}
+            _on = bool(_st.get("master_enable")) or bool((_st.get("transport_file") or {}).get("data"))
+            rc["subscription"] = {"sender_id": _st.get("sender_id") if _on else None, "active": _on}
         for orphan in list(_recv_state):
             if orphan not in _receivers:
                 del _recv_state[orphan]
