@@ -222,7 +222,7 @@ def _build_sender_resource(snd_id, did, fid, vmid, label, version):
 
 
 def _build_receiver_resource(rid, did, vmid, recv_idx, label, version, fmt="video"):
-    media_types = {"video": ["video/raw"], "audio": ["audio/L24"]}[fmt]
+    media_types = {"video": ["video/raw"], "audio": ["audio/L24"], "data": ["video/smpte291"]}[fmt]
     return {
         "id": rid,
         "version": version,
@@ -268,6 +268,34 @@ def _build_audio_flow_resource(fid, did, src_id, vmid, label, version):
         "sample_rate": {"numerator": 48000, "denominator": 1},
         "bit_depth": 24,
     }
+
+def _build_data_source_resource(sid, did, vmid, label, version):
+    return {
+        "id": sid, "version": version,
+        "label": f"{label} source",
+        "description": f"Source ANC (2110-40) sender container {vmid}",
+        "tags": {"urn:x-mxl:vmid": [str(vmid)]},
+        "device_id": did,
+        "parents": [],   # IS-04 v1.3 : required array
+        "format": "urn:x-nmos:format:data",
+        "caps": {},
+        "clock_name": "clk0",
+    }
+
+
+def _build_data_flow_resource(fid, did, src_id, vmid, label, version):
+    return {
+        "id": fid, "version": version,
+        "label": f"{label} flow",
+        "description": f"Flow ANC 2110-40 (SMPTE 291) container {vmid}",
+        "tags": {"urn:x-mxl:vmid": [str(vmid)]},
+        "device_id": did,
+        "source_id": src_id,
+        "parents": [],   # IS-04 v1.3 : required array
+        "format": "urn:x-nmos:format:data",
+        "media_type": "video/smpte291",
+    }
+
 
 def _build_device_resource(did, vmid, hostname, version):
     return {
@@ -390,6 +418,7 @@ def rebuild_model():
         # Counts par essence — lus depuis deploy_config.params (source de vérité unique)
         n_video = int(dc_params.get("video_count", 0) or 0) if is_receiver else 0
         n_audio = int(dc_params.get("audio_count", 0) or 0) if is_receiver else 0
+        n_data  = int(dc_params.get("anc_count", 0) or 0) if is_receiver else 0
         has_video_send = is_sender and bool(dc_params.get("video"))
         n_audio_send = len(dc_params.get("audios") or []) if is_sender else 0
         # Moteur bi-rôle : N senders vidéo (slots TX), un par entrée de params.tx_slots.
@@ -397,7 +426,7 @@ def rebuild_model():
         smpte_2022_7 = bool(dc_params.get("smpte_2022_7")) if is_receiver else False
         n_legs = 2 if smpte_2022_7 else 1
         # Container exposé en NMOS s'il a au moins un receiver ou sender
-        if (n_video + n_audio) <= 0 and not has_video_send and n_audio_send <= 0 and not tx_slots:
+        if (n_video + n_audio + n_data) <= 0 and not has_video_send and n_audio_send <= 0 and not tx_slots:
             continue
         did = _stable_uuid(f"device:{vmid}")
         new_devices[did] = _build_device_resource(did, vmid, c.get("hostname"), version)
@@ -438,6 +467,24 @@ def rebuild_model():
                 _recv_state[rid] = {
                     "staged": _empty_staged(n_legs), "active": _empty_staged(n_legs),
                     "vmid": vmid, "recv_idx": idx, "essence": "audio",
+                }
+
+        # Receivers ANC (2110-40 / data) — rattachés au bundle vidéo (anc j → vidéo j % n_video)
+        _data_role_ctr = {}
+        for idx in range(n_data):
+            rid = _stable_uuid(f"receiver:d:{vmid}:{idx}")
+            label = f"{c.get('hostname') or vmid} #rd{idx} (anc)"
+            new_receivers[rid] = _build_receiver_resource(rid, did, vmid, idx, label, version, fmt="data")
+            grp = _grp_name(idx % n_video) if n_video > 0 else base
+            n = _data_role_ctr.get(grp, 0) + 1
+            _data_role_ctr[grp] = n
+            _set_grouphint(new_receivers[rid], grp, f"anc {n}")
+            new_devices[did]["receivers"].append(rid)
+            cur = _recv_state.get(rid)
+            if not cur or len(cur["staged"]["transport_params"]) != n_legs:
+                _recv_state[rid] = {
+                    "staged": _empty_staged(n_legs), "active": _empty_staged(n_legs),
+                    "vmid": vmid, "recv_idx": idx, "essence": "anc",
                 }
 
         # Sender vidéo (0 ou 1)
@@ -548,6 +595,33 @@ def rebuild_model():
                     "staged": empty, "active": json.loads(json.dumps(empty)),
                     "vmid": vmid, "multicast_ip": mcast, "destination_port": port,
                     "essence": "audio", "audio_idx": a_idx,
+                }
+            else:
+                _send_state[snd_id]["multicast_ip"] = mcast
+                _send_state[snd_id]["destination_port"] = port
+
+        # Senders ANC MOTEUR (slots TX) — un sender data (2110-40) par slot TX porteur d'une dest ANC.
+        # Le TX ANC suit la vidéo câblée (shm dérivé) → même tx_idx que le sender vidéo, essence "anc".
+        for tx_idx, tslot in enumerate(tx_slots):
+            mcast = tslot.get("anc_multicast_ip")
+            if not mcast:
+                continue
+            port = int(tslot.get("anc_dest_port") or 0)
+            src_id = _stable_uuid(f"source:d:{vmid}:tx{tx_idx}")
+            fid    = _stable_uuid(f"flow:d:{vmid}:tx{tx_idx}")
+            snd_id = _stable_uuid(f"sender:d:{vmid}:tx{tx_idx}")
+            label  = f"{c.get('hostname') or vmid} TX{tx_idx} 2110-40"
+            new_sources[src_id] = _build_data_source_resource(src_id, did, vmid, label, version)
+            new_flows[fid]      = _build_data_flow_resource(fid, did, src_id, vmid, label, version)
+            new_senders[snd_id] = _build_sender_resource(snd_id, did, fid, vmid, label, version)
+            _set_grouphint(new_senders[snd_id], base, f"TX {tx_idx + 1} ANC")
+            new_devices[did]["senders"].append(snd_id)
+            if snd_id not in _send_state:
+                empty = _empty_sender_staged(mcast, port)
+                _send_state[snd_id] = {
+                    "staged": empty, "active": json.loads(json.dumps(empty)),
+                    "vmid": vmid, "multicast_ip": mcast, "destination_port": port,
+                    "essence": "anc", "tx_idx": tx_idx,
                 }
             else:
                 _send_state[snd_id]["multicast_ip"] = mcast
@@ -898,6 +972,7 @@ def is05_send_transportfile(sid):
     with _lock:
         vmid = _send_state[sid]["vmid"]
         tx_idx = _send_state[sid].get("tx_idx")   # présent ⇒ sender d'un moteur MTL bi-rôle
+        snd_essence = _send_state[sid].get("essence", "video")
     from app.proxmox import get_container_ip
     ip = get_container_ip(vmid)
     if not ip:
@@ -910,9 +985,10 @@ def is05_send_transportfile(sid):
     except Exception as e:
         return (f"metrics fetch failed: {e}", 503)
     if tx_idx is not None:
-        # Moteur MTL : SDP par slot TX, exposé dans metrics.senders[].sdp (généré par le contrôleur).
+        # Moteur MTL : SDP par slot TX + essence (vidéo 2110-20 / ANC 2110-40), exposé dans
+        # metrics.senders[].sdp (généré par le contrôleur). On désambiguïse vidéo/ANC du même slot.
         sdp = next((s.get("sdp") for s in (data.get("senders") or [])
-                    if s.get("tx_idx") == tx_idx), "") or ""
+                    if s.get("tx_idx") == tx_idx and s.get("essence", "video") == snd_essence), "") or ""
     else:
         sdp = data.get("sdp") or ""
     if not sdp:
