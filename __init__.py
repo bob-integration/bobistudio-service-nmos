@@ -909,6 +909,54 @@ def _activate_receiver(rid):
         args=(vmid, recv_idx, essence, master_enable, sdp, mcast_info),
         daemon=True
     ).start()
+    # Propage le format RÉEL (lu du SDP) dans le deploy_config → topologie/câblage/consommateurs
+    # (mixer, multiview…) voient le vrai WxH/fps reçu, pas seulement l'affichage I/O. Stream
+    # auto-détecte déjà depuis le shm ; ceci aligne les autres. En thread (hors _lock NMOS).
+    if essence == "video" and master_enable and sdp:
+        threading.Thread(target=_propagate_sdp_format, args=(vmid, sdp), daemon=True).start()
+
+def _propagate_sdp_format(vmid, sdp):
+    """Écrit width/height/fps/scan lus du SDP dans le deploy_config du receiver (si différent),
+    puis notify_state_change → la topologie et les consommateurs voient le vrai format reçu.
+    Multi-slot : modèle width/height par container (le dernier flux activé fait foi)."""
+    from app.database import db_get_container, db_update_deploy_config
+    w  = re.search(r"width=(\d+)", sdp)
+    h  = re.search(r"height=(\d+)", sdp)
+    fr = re.search(r"exactframerate=(\d+)(?:/(\d+))?", sdp)
+    if not (w and h):
+        return
+    c = db_get_container(vmid)
+    if not c:
+        return
+    dc = c.get("deploy_config")
+    try:
+        dc = json.loads(dc) if isinstance(dc, str) else dc
+    except Exception:
+        dc = None
+    if not dc:
+        return
+    params = dict(dc.get("params") or {})
+    new_w, new_h = int(w.group(1)), int(h.group(1))
+    scan = "i" if re.search(r"\binterlace\b", sdp) else "p"
+    new_fps = params.get("fps")
+    if fr:
+        num = int(fr.group(1)); den = int(fr.group(2)) if fr.group(2) else 1
+        new_fps = round(num / den, 2)
+    changed = (int(params.get("width") or 0) != new_w
+               or int(params.get("height") or 0) != new_h
+               or str(params.get("scan") or "") != scan)
+    if not changed:
+        return
+    params["width"] = new_w; params["height"] = new_h
+    params["scan"] = scan
+    if new_fps:
+        params["fps"] = new_fps
+    db_update_deploy_config(vmid, dc.get("type"), params)
+    try:
+        notify_state_change()
+    except Exception as e:
+        log.warning("nmos: notify après propagation format vmid=%s: %s", vmid, e)
+
 
 def _build_leg1_sdp(leg0_sdp, leg1_tp):
     """Construit un SDP leg1 depuis leg0 en remplaçant adresse multicast et port."""
