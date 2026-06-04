@@ -383,18 +383,21 @@ def rebuild_model():
         dc_type = dc.get("type") if dc else None
         from app import plugins as _plg
         _manifest   = _plg.REGISTRY.get(dc_type) or {}
-        is_receiver = _manifest.get("nmos_role") == "receiver"
-        is_sender   = _manifest.get("nmos_role") == "sender"
+        _role = _manifest.get("nmos_role")           # "receiver" | "sender" | "both" (moteur bi-rôle)
+        is_receiver = _role in ("receiver", "both")
+        is_sender   = _role in ("sender", "both")
         dc_params = (dc.get("params") or {}) if dc else {}
         # Counts par essence — lus depuis deploy_config.params (source de vérité unique)
         n_video = int(dc_params.get("video_count", 0) or 0) if is_receiver else 0
         n_audio = int(dc_params.get("audio_count", 0) or 0) if is_receiver else 0
         has_video_send = is_sender and bool(dc_params.get("video"))
         n_audio_send = len(dc_params.get("audios") or []) if is_sender else 0
+        # Moteur bi-rôle : N senders vidéo (slots TX), un par entrée de params.tx_slots.
+        tx_slots = (dc_params.get("tx_slots") or []) if is_sender else []
         smpte_2022_7 = bool(dc_params.get("smpte_2022_7")) if is_receiver else False
         n_legs = 2 if smpte_2022_7 else 1
         # Container exposé en NMOS s'il a au moins un receiver ou sender
-        if (n_video + n_audio) <= 0 and not has_video_send and n_audio_send <= 0:
+        if (n_video + n_audio) <= 0 and not has_video_send and n_audio_send <= 0 and not tx_slots:
             continue
         did = _stable_uuid(f"device:{vmid}")
         new_devices[did] = _build_device_resource(did, vmid, c.get("hostname"), version)
@@ -485,6 +488,42 @@ def rebuild_model():
                     empty = _empty_sender_staged(mcast, port, leg1=leg1_v)
                     _send_state[snd_id]["staged"] = empty
                     _send_state[snd_id]["active"] = json.loads(json.dumps(empty))
+
+        # Senders vidéo MOTEUR (slots TX) — un sender NMOS par entrée tx_slots, keyé sur tx_idx.
+        # (Additif : sans tx_slots, aucun sender — les receivers/senders existants sont inchangés.)
+        for tx_idx, tslot in enumerate(tx_slots):
+            mcast = tslot.get("multicast_ip") or "239.10.10.1"
+            port  = int(tslot.get("dest_port") or 5000)
+            width = int(tslot.get("width") or 1280)
+            height = int(tslot.get("height") or 720)
+            chroma = str(tslot.get("chroma") or "422")
+            bit_depth = tslot.get("bit_depth") or 10
+            from app.scripts import COLORIMETRY, nmos_colorimetry
+            _colo = str(tslot.get("colorimetry") or "").strip().lower()
+            if _colo in COLORIMETRY:
+                cs, transfer = COLORIMETRY[_colo]["nmos_colorspace"], COLORIMETRY[_colo]["nmos_transfer"]
+            else:
+                cs, transfer = nmos_colorimetry(tslot.get("color_primaries"), tslot.get("color_trc"))
+            src_id = _stable_uuid(f"source:v:{vmid}:tx{tx_idx}")
+            fid    = _stable_uuid(f"flow:v:{vmid}:tx{tx_idx}")
+            snd_id = _stable_uuid(f"sender:v:{vmid}:tx{tx_idx}")
+            label  = f"{c.get('hostname') or vmid} TX{tx_idx} 2110-20"
+            new_sources[src_id] = _build_source_resource(src_id, did, vmid, label, version)
+            new_flows[fid]      = _build_flow_resource(fid, did, src_id, vmid, label, width, height,
+                                                       version, chroma, bit_depth, cs, transfer)
+            new_senders[snd_id] = _build_sender_resource(snd_id, did, fid, vmid, label, version)
+            _set_grouphint(new_senders[snd_id], base, f"TX {tx_idx + 1}")
+            new_devices[did]["senders"].append(snd_id)
+            if snd_id not in _send_state:
+                empty = _empty_sender_staged(mcast, port)
+                _send_state[snd_id] = {
+                    "staged": empty, "active": json.loads(json.dumps(empty)),
+                    "vmid": vmid, "multicast_ip": mcast, "destination_port": port,
+                    "essence": "video", "tx_idx": tx_idx,
+                }
+            else:
+                _send_state[snd_id]["multicast_ip"] = mcast
+                _send_state[snd_id]["destination_port"] = port
 
         # Senders audio (0, 1 ou 2)
         for a_idx, a in enumerate((dc.get("params") or {}).get("audios") or []):
