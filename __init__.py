@@ -172,12 +172,13 @@ def _build_source_resource(sid, did, vmid, label, version):
 
 
 def _build_flow_resource(fid, did, src_id, vmid, label, width, height, version, chroma="422",
-                         bit_depth=10, colorspace="BT709", transfer="SDR"):
-    from app.scripts import CHROMA_DIV, normalize_bit_depth
+                         bit_depth=10, colorspace="BT709", transfer="SDR", scan="p", fo=""):
+    from app.scripts import CHROMA_DIV, normalize_bit_depth, nmos_interlace_mode
     cw, ch = CHROMA_DIV.get(str(chroma), CHROMA_DIV["422"])
     half_w   = max(1, width // cw)
     chroma_h = max(1, height // ch)
     bd = normalize_bit_depth(bit_depth)
+    # grain_rate = cadence TRAME : pour 1080i50 (entrelacé) c'est 25, pas 50 (= la cadence champ).
     return {
         "id": fid,
         "version": version,
@@ -192,7 +193,7 @@ def _build_flow_resource(fid, did, src_id, vmid, label, width, height, version, 
         "grain_rate": {"numerator": 25, "denominator": 1},
         "frame_width": int(width),
         "frame_height": int(height),
-        "interlace_mode": "progressive",
+        "interlace_mode": nmos_interlace_mode({"scan": scan, "field_order": fo, "height": height}),
         "colorspace": colorspace,
         "transfer_characteristic": transfer,
         "components": [
@@ -508,9 +509,11 @@ def rebuild_model():
             fid    = _stable_uuid(f"flow:v:{vmid}")
             snd_id = _stable_uuid(f"sender:v:{vmid}")
             label  = f"{c.get('hostname') or vmid} 2110-20"
+            _scan = str(_pp.get("scan") or v.get("scan") or "p")
+            _fo   = str(_pp.get("field_order") or v.get("field_order") or "")
             new_sources[src_id] = _build_source_resource(src_id, did, vmid, label, version)
             new_flows[fid]      = _build_flow_resource(fid, did, src_id, vmid, label, width, height,
-                                                       version, chroma, bit_depth, cs, transfer)
+                                                       version, chroma, bit_depth, cs, transfer, _scan, _fo)
             new_senders[snd_id] = _build_sender_resource(snd_id, did, fid, vmid, label, version)
             _set_grouphint(new_senders[snd_id], base, "video")
             new_devices[did]["senders"].append(snd_id)
@@ -551,13 +554,25 @@ def rebuild_model():
                 cs, transfer = COLORIMETRY[_colo]["nmos_colorspace"], COLORIMETRY[_colo]["nmos_transfer"]
             else:
                 cs, transfer = nmos_colorimetry(tslot.get("color_primaries"), tslot.get("color_trc"))
+            # Passthrough du balayage : la vérité est le format du PRODUCTEUR du shm câblé sur ce
+            # slot ; à défaut, le scan reçu par le moteur lui-même. Ne pas mettre progressif en dur.
+            _tx_shm = dc_params.get(f"tx{tx_idx}_shm") or ""
+            _src_fmt = {}
+            if _tx_shm:
+                try:
+                    from app.monitor import _shm_fmt as _mtl_shm_fmt
+                    _src_fmt = _mtl_shm_fmt(_tx_shm) or {}
+                except Exception:
+                    _src_fmt = {}
+            _scan = str(_src_fmt.get("scan") or dc_params.get("scan") or "p")
+            _fo   = str(_src_fmt.get("field_order") or dc_params.get("field_order") or "")
             src_id = _stable_uuid(f"source:v:{vmid}:tx{tx_idx}")
             fid    = _stable_uuid(f"flow:v:{vmid}:tx{tx_idx}")
             snd_id = _stable_uuid(f"sender:v:{vmid}:tx{tx_idx}")
             label  = f"{c.get('hostname') or vmid} TX{tx_idx} 2110-20"
             new_sources[src_id] = _build_source_resource(src_id, did, vmid, label, version)
             new_flows[fid]      = _build_flow_resource(fid, did, src_id, vmid, label, width, height,
-                                                       version, chroma, bit_depth, cs, transfer)
+                                                       version, chroma, bit_depth, cs, transfer, _scan, _fo)
             new_senders[snd_id] = _build_sender_resource(snd_id, did, fid, vmid, label, version)
             _set_grouphint(new_senders[snd_id], base, f"TX {tx_idx + 1}")
             new_devices[did]["senders"].append(snd_id)
@@ -1068,17 +1083,23 @@ def _propagate_sdp_format(vmid, sdp):
     params = dict(dc.get("params") or {})
     new_w, new_h = int(w.group(1)), int(h.group(1))
     scan = "i" if re.search(r"\binterlace\b", sdp) else "p"
+    # Ordre de champ : le SDP 2110-20 ne le porte pas explicitement → défaut par résolution
+    # (helper central : 1080i = TFF, 576i = BFF). Progressif → pas de field_order.
+    from app.scripts import field_order as _field_order
+    new_fo = _field_order({"scan": scan, "height": new_h}) if scan == "i" else ""
     new_fps = params.get("fps")
     if fr:
         num = int(fr.group(1)); den = int(fr.group(2)) if fr.group(2) else 1
         new_fps = round(num / den, 2)
     changed = (int(params.get("width") or 0) != new_w
                or int(params.get("height") or 0) != new_h
-               or str(params.get("scan") or "") != scan)
+               or str(params.get("scan") or "") != scan
+               or str(params.get("field_order") or "") != new_fo)
     if not changed:
         return
     params["width"] = new_w; params["height"] = new_h
     params["scan"] = scan
+    params["field_order"] = new_fo
     if new_fps:
         params["fps"] = new_fps
     db_update_deploy_config(vmid, dc.get("type"), params)
