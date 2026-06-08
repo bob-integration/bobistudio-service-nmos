@@ -615,6 +615,34 @@ def rebuild_model():
                 _send_state[snd_id]["multicast_ip"] = mcast
                 _send_state[snd_id]["destination_port"] = port
 
+        # Senders audio par slot TX (moteur bi-rôle, ex. receiver_2110_mtl) — distinct des senders
+        # audio globaux (sender_2110). Chaque tx_slot peut porter jusqu'à 2 flux audio 2110-30.
+        for tx_idx, tslot in enumerate(tx_slots):
+            for ai, acfg in enumerate((tslot.get("audios") or [])[:2]):
+                mcast = acfg.get("multicast_ip")
+                if not mcast:
+                    continue
+                port   = int(acfg.get("dest_port") or 0)
+                src_id = _stable_uuid(f"source:a:{vmid}:tx{tx_idx}:{ai}")
+                fid    = _stable_uuid(f"flow:a:{vmid}:tx{tx_idx}:{ai}")
+                snd_id = _stable_uuid(f"sender:a:{vmid}:tx{tx_idx}:{ai}")
+                label  = f"{c.get('hostname') or vmid} TX{tx_idx} 2110-30 #{ai}"
+                new_sources[src_id] = _build_audio_source_resource(src_id, did, vmid, label, version)
+                new_flows[fid]      = _build_audio_flow_resource(fid, did, src_id, vmid, label, version)
+                new_senders[snd_id] = _build_sender_resource(snd_id, did, fid, vmid, label, version)
+                _set_grouphint(new_senders[snd_id], base, f"TX {tx_idx + 1} audio {ai + 1}")
+                new_devices[did]["senders"].append(snd_id)
+                if snd_id not in _send_state:
+                    _send_state[snd_id] = {
+                        "staged": _empty_sender_staged(mcast, port),
+                        "active": _empty_sender_staged(mcast, port),
+                        "vmid": vmid, "multicast_ip": mcast, "destination_port": port,
+                        "essence": "audio", "tx_idx": tx_idx, "audio_idx": ai,
+                    }
+                else:
+                    _send_state[snd_id]["multicast_ip"] = mcast
+                    _send_state[snd_id]["destination_port"] = port
+
         # Senders ANC MOTEUR (slots TX) — un sender data (2110-40) par slot TX porteur d'une dest ANC.
         # Le TX ANC suit la vidéo câblée (shm dérivé) → même tx_idx que le sender vidéo, essence "anc".
         for tx_idx, tslot in enumerate(tx_slots):
