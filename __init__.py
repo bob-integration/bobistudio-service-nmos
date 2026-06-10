@@ -416,14 +416,27 @@ def rebuild_model():
         is_receiver = _role in ("receiver", "both")
         is_sender   = _role in ("sender", "both")
         dc_params = (dc.get("params") or {}) if dc else {}
-        # Counts par essence — lus depuis deploy_config.params (source de vérité unique)
-        n_video = int(dc_params.get("video_count", 0) or 0) if is_receiver else 0
-        n_audio = int(dc_params.get("audio_count", 0) or 0) if is_receiver else 0
-        n_data  = int(dc_params.get("anc_count", 0) or 0) if is_receiver else 0
+        # Counts par essence — lus depuis deploy_config.params (source de vérité unique).
+        # active_rx_count / active_tx_count limitent combien de slots apparaissent dans NMOS
+        # (les queues MTL sous-jacentes sont toutes allouées ; c'est une fenêtre de visibilité).
+        n_video_full = int(dc_params.get("video_count", 0) or 0) if is_receiver else 0
+        _arc = dc_params.get("active_rx_count")
+        n_video = min(int(_arc if _arc is not None else n_video_full), n_video_full) if is_receiver else 0
+        aper = int(dc_params.get("audio_per_video") or 0)
+        n_audio_full = int(dc_params.get("audio_count", 0) or 0) if is_receiver else 0
+        if aper > 0 and is_receiver:
+            n_audio = n_video * aper          # audio suit la vidéo proportionnellement
+        else:
+            n_audio = min(int(dc_params.get("active_rx_count") or n_audio_full), n_audio_full) if is_receiver else 0
+        n_data_full = int(dc_params.get("anc_count", 0) or 0) if is_receiver else 0
+        n_data = min(n_video, n_data_full) if is_receiver else 0   # 1 ANC par groupe vidéo, ≤ anc_count
         has_video_send = is_sender and bool(dc_params.get("video"))
         n_audio_send = len(dc_params.get("audios") or []) if is_sender else 0
-        # Moteur bi-rôle : N senders vidéo (slots TX), un par entrée de params.tx_slots.
-        tx_slots = (dc_params.get("tx_slots") or []) if is_sender else []
+        # Moteur bi-rôle : N senders vidéo (slots TX), limités à active_tx_count.
+        tx_slots_full = (dc_params.get("tx_slots") or []) if is_sender else []
+        _atc = dc_params.get("active_tx_count")
+        n_tx_active = min(int(_atc if _atc is not None else len(tx_slots_full)), len(tx_slots_full)) if is_sender else 0
+        tx_slots = tx_slots_full[:n_tx_active]
         smpte_2022_7 = bool(dc_params.get("smpte_2022_7")) if is_receiver else False
         n_legs = 2 if smpte_2022_7 else 1
         # Container exposé en NMOS s'il a au moins un receiver ou sender
