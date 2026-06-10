@@ -576,8 +576,12 @@ def rebuild_model():
             new_senders[snd_id] = _build_sender_resource(snd_id, did, fid, vmid, label, version)
             _set_grouphint(new_senders[snd_id], base, f"TX {tx_idx + 1}")
             new_devices[did]["senders"].append(snd_id)
+            smpte_v = bool(tslot.get("smpte_2022_7") or dc_params.get("smpte_2022_7"))
+            mcast1_v = tslot.get("multicast_ip_leg1")
+            port1_v  = tslot.get("dest_port_leg1")
+            leg1_v   = (mcast1_v, port1_v) if (smpte_v and mcast1_v and port1_v) else None
             if snd_id not in _send_state:
-                empty = _empty_sender_staged(mcast, port)
+                empty = _empty_sender_staged(mcast, port, leg1=leg1_v)
                 _send_state[snd_id] = {
                     "staged": empty, "active": json.loads(json.dumps(empty)),
                     "vmid": vmid, "multicast_ip": mcast, "destination_port": port,
@@ -586,6 +590,12 @@ def rebuild_model():
             else:
                 _send_state[snd_id]["multicast_ip"] = mcast
                 _send_state[snd_id]["destination_port"] = port
+                cur_legs = len(_send_state[snd_id]["staged"].get("transport_params") or [])
+                want_legs = 2 if leg1_v else 1
+                if cur_legs != want_legs:
+                    empty = _empty_sender_staged(mcast, port, leg1=leg1_v)
+                    _send_state[snd_id]["staged"] = empty
+                    _send_state[snd_id]["active"] = json.loads(json.dumps(empty))
 
         # Senders audio (0, 1 ou 2)
         for a_idx, a in enumerate((dc.get("params") or {}).get("audios") or []):
@@ -615,7 +625,7 @@ def rebuild_model():
                 _send_state[snd_id]["multicast_ip"] = mcast
                 _send_state[snd_id]["destination_port"] = port
 
-        # Senders audio par slot TX (moteur bi-rôle, ex. receiver_2110_mtl) — distinct des senders
+        # Senders audio par slot TX (moteur bi-rôle, ex. 2110_io) — distinct des senders
         # audio globaux (sender_2110). Chaque tx_slot peut porter jusqu'à 2 flux audio 2110-30.
         for tx_idx, tslot in enumerate(tx_slots):
             for ai, acfg in enumerate((tslot.get("audios") or [])[:2]):
@@ -632,10 +642,14 @@ def rebuild_model():
                 new_senders[snd_id] = _build_sender_resource(snd_id, did, fid, vmid, label, version)
                 _set_grouphint(new_senders[snd_id], base, f"TX {tx_idx + 1} audio {ai + 1}")
                 new_devices[did]["senders"].append(snd_id)
+                smpte_a = bool(tslot.get("smpte_2022_7") or dc_params.get("smpte_2022_7"))
+                mcast1_a = acfg.get("multicast_ip_leg1")
+                port1_a  = acfg.get("dest_port_leg1")
+                leg1_a   = (mcast1_a, port1_a) if (smpte_a and mcast1_a and port1_a) else None
                 if snd_id not in _send_state:
+                    empty_a = _empty_sender_staged(mcast, port, leg1=leg1_a)
                     _send_state[snd_id] = {
-                        "staged": _empty_sender_staged(mcast, port),
-                        "active": _empty_sender_staged(mcast, port),
+                        "staged": empty_a, "active": json.loads(json.dumps(empty_a)),
                         "vmid": vmid, "multicast_ip": mcast, "destination_port": port,
                         "essence": "audio", "tx_idx": tx_idx, "audio_idx": ai,
                     }
@@ -659,8 +673,12 @@ def rebuild_model():
             new_senders[snd_id] = _build_sender_resource(snd_id, did, fid, vmid, label, version)
             _set_grouphint(new_senders[snd_id], base, f"TX {tx_idx + 1} ANC")
             new_devices[did]["senders"].append(snd_id)
+            smpte_d = bool(tslot.get("smpte_2022_7") or dc_params.get("smpte_2022_7"))
+            mcast1_d = tslot.get("anc_multicast_ip_leg1")
+            port1_d  = tslot.get("anc_dest_port_leg1")
+            leg1_d   = (mcast1_d, port1_d) if (smpte_d and mcast1_d and port1_d) else None
             if snd_id not in _send_state:
-                empty = _empty_sender_staged(mcast, port)
+                empty = _empty_sender_staged(mcast, port, leg1=leg1_d)
                 _send_state[snd_id] = {
                     "staged": empty, "active": json.loads(json.dumps(empty)),
                     "vmid": vmid, "multicast_ip": mcast, "destination_port": port,
@@ -1137,18 +1155,19 @@ def _propagate_sdp_format(vmid, sdp):
         log.warning("nmos: notify après propagation format vmid=%s: %s", vmid, e)
 
 
-def _build_leg1_sdp(leg0_sdp, leg1_tp):
-    """Construit un SDP leg1 depuis leg0 en remplaçant adresse multicast et port."""
-    if not leg0_sdp or not leg1_tp:
-        return ""
-    sdp = leg0_sdp
-    mcast1 = leg1_tp.get("multicast_ip")
-    port1  = leg1_tp.get("destination_port")
-    if mcast1:
-        sdp = re.sub(r"(c=IN IP4 )[\d.]+", rf"\g<1>{mcast1}", sdp)
-    if port1:
-        sdp = re.sub(r"(m=(?:video|audio) )\d+", rf"\g<1>{port1}", sdp)
-    return sdp
+def _build_dual_sdp(sdp_leg0, mcast1, port1):
+    """Greffe une deuxième section m= (leg1) sur sdp_leg0 pour SMPTE 2022-7.
+    Retourne un unique SDP avec deux blocs media (leg0 + leg1)."""
+    if not sdp_leg0 or not mcast1 or not port1:
+        return sdp_leg0 or ""
+    m = re.search(r"(m=(?:video|audio|application) )", sdp_leg0)
+    if not m:
+        return sdp_leg0
+    media_block = sdp_leg0[m.start():]
+    leg1 = re.sub(r"(m=(?:video|audio|application) )\d+", rf"\g<1>{int(port1)}", media_block)
+    leg1 = re.sub(r"(c=IN IP4 )[\d.]+", rf"\g<1>{mcast1}", leg1)
+    leg1 = re.sub(r"(a=source-filter: incl IN IP4 )[\d.]+", rf"\g<1>{mcast1}", leg1)
+    return sdp_leg0 + leg1
 
 def _extract_mcast_info(active, smpte_2022_7=False):
     """Résume les transport_params + SDP.
@@ -1189,14 +1208,14 @@ def _notify_agent(vmid, recv_idx, essence, enable, sdp, mcast_info):
         db_add_alert(f"NMOS subscription receiver #{recv_idx}/{essence} container {vmid}: IP introuvable", "warning")
         return
     if isinstance(mcast_info, list):
-        # SMPTE 2022-7 : two legs
+        # SMPTE 2022-7 : un unique SDP avec deux sections m= (leg0 + leg1)
         info0, info1 = mcast_info[0], mcast_info[1]
-        sdp1 = _build_leg1_sdp(sdp, info1) if sdp else ""
+        dual_sdp = _build_dual_sdp(sdp, info1.get("multicast_ip"), info1.get("destination_port")) if sdp else sdp
         payload = {
             "receiver_index": recv_idx,
             "essence": essence,
             "enabled": enable,
-            "sdp": [sdp or "", sdp1],
+            "sdp": dual_sdp,
             "multicast_ip": info0.get("multicast_ip"),
             "destination_port": info0.get("destination_port"),
             "source_ip": info0.get("source_ip"),
