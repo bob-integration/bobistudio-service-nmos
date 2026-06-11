@@ -1049,6 +1049,7 @@ def is05_send_transportfile(sid):
         vmid = _send_state[sid]["vmid"]
         tx_idx = _send_state[sid].get("tx_idx")   # présent ⇒ sender d'un moteur MTL bi-rôle
         snd_essence = _send_state[sid].get("essence", "video")
+        snd_aidx = _send_state[sid].get("audio_idx")   # désambiguïse les 2 flux audio d'un même slot
     from app.proxmox import get_container_ip
     ip = get_container_ip(vmid)
     if not ip:
@@ -1061,27 +1062,38 @@ def is05_send_transportfile(sid):
     except Exception as e:
         return (f"metrics fetch failed: {e}", 503)
     if tx_idx is not None:
-        # Moteur MTL : SDP par slot TX + essence (vidéo 2110-20 / ANC 2110-40), exposé dans
-        # metrics.senders[].sdp (généré par le contrôleur). On désambiguïse vidéo/ANC du même slot.
+        # Moteur MTL : SDP par slot TX + essence (vidéo 2110-20 / audio 2110-30 / ANC 2110-40),
+        # exposé dans metrics.senders[].sdp (généré par le contrôleur). On désambiguïse par tx_idx +
+        # essence, et par audio_idx pour les 2 flux audio d'un même slot.
         sdp = next((s.get("sdp") for s in (data.get("senders") or [])
-                    if s.get("tx_idx") == tx_idx and s.get("essence", "video") == snd_essence), "") or ""
+                    if s.get("tx_idx") == tx_idx and s.get("essence", "video") == snd_essence
+                    and (snd_essence != "audio" or s.get("audio_idx") == snd_aidx)), "") or ""
     else:
         sdp = data.get("sdp") or ""
     if not sdp:
         return ("sdp non encore disponible (slot TX pas câblé / pas d'émission ?)", 404)
 
-    # Injection PTP : insère a=ts-refclk + a=mediaclk juste après la dernière
-    # ligne d'attribut media-level (juste avant la fin du SDP). ffmpeg ne les
-    # ajoute pas, mais l'interop 2110 broadcast les attend.
+    # Upgrade PTP : le conteneur émet déjà un a=ts-refclk:localmac par section média (repli
+    # d'horloge conforme sans PTP). Si l'hôte est PTP locké, on REMPLACE chaque localmac par
+    # la forme PTP traçable (a=ts-refclk:ptp=IEEE1588-2008:<gm>:<domain>) — par section, dual-leg
+    # compris. ffmpeg/anciens conteneurs sans localmac : on insère la ligne PTP avant chaque
+    # a=mediaclk (repli à l'append si aucune). L'interop 2110 broadcast attend ce ts-refclk.
     try:
         from app import settings as st, ptp as _ptp
         if st.get("ptp_enabled"):
-            refclk = _ptp.sdp_refclk_lines(st.get("proxmox_host"))
-            if refclk and "ts-refclk" not in sdp:
-                # Append à la fin (les attributs media-level peuvent être en queue)
-                if not sdp.endswith("\n"):
-                    sdp += "\r\n"
-                sdp += refclk
+            refclk = _ptp.sdp_refclk_lines(st.get("proxmox_host"))  # ts-refclk:ptp=… + mediaclk
+            ptp_line = next((ln for ln in refclk.splitlines() if "ts-refclk" in ln), "")
+            if ptp_line:
+                ptp_line += "\r\n"
+                if "ts-refclk:localmac=" in sdp:
+                    sdp = re.sub(r"a=ts-refclk:localmac=\S+\r?\n", ptp_line, sdp)
+                elif "ts-refclk" not in sdp:
+                    if "a=mediaclk" in sdp:
+                        sdp = re.sub(r"(a=mediaclk)", ptp_line + r"\1", sdp)
+                    else:
+                        if not sdp.endswith("\n"):
+                            sdp += "\r\n"
+                        sdp += ptp_line
     except Exception as e:
         log.warning(f"sdp ptp injection skipped: {e}")
     return (sdp, 200, {"Content-Type": "application/sdp"})
