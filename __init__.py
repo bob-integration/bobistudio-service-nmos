@@ -587,7 +587,9 @@ def rebuild_model():
             new_flows[fid]      = _build_flow_resource(fid, did, src_id, vmid, label, width, height,
                                                        version, chroma, bit_depth, cs, transfer, _scan, _fo)
             new_senders[snd_id] = _build_sender_resource(snd_id, did, fid, vmid, label, version)
-            _set_grouphint(new_senders[snd_id], base, f"TX {tx_idx + 1}")
+            # Groupé PAR SLOT TX (comme les receivers le sont par canal) : vidéo + audio(s)
+            # + ANC d'un même slot partagent le group_name, le rôle = essence.
+            _set_grouphint(new_senders[snd_id], f"{base} TX {tx_idx + 1}", "video")
             new_devices[did]["senders"].append(snd_id)
             smpte_v = bool(tslot.get("smpte_2022_7") or dc_params.get("smpte_2022_7"))
             mcast1_v = tslot.get("multicast_ip_leg1")
@@ -653,7 +655,7 @@ def rebuild_model():
                 new_sources[src_id] = _build_audio_source_resource(src_id, did, vmid, label, version)
                 new_flows[fid]      = _build_audio_flow_resource(fid, did, src_id, vmid, label, version)
                 new_senders[snd_id] = _build_sender_resource(snd_id, did, fid, vmid, label, version)
-                _set_grouphint(new_senders[snd_id], base, f"TX {tx_idx + 1} audio {ai + 1}")
+                _set_grouphint(new_senders[snd_id], f"{base} TX {tx_idx + 1}", f"audio {ai + 1}")
                 new_devices[did]["senders"].append(snd_id)
                 smpte_a = bool(tslot.get("smpte_2022_7") or dc_params.get("smpte_2022_7"))
                 mcast1_a = acfg.get("multicast_ip_leg1")
@@ -684,7 +686,7 @@ def rebuild_model():
             new_sources[src_id] = _build_data_source_resource(src_id, did, vmid, label, version)
             new_flows[fid]      = _build_data_flow_resource(fid, did, src_id, vmid, label, version)
             new_senders[snd_id] = _build_sender_resource(snd_id, did, fid, vmid, label, version)
-            _set_grouphint(new_senders[snd_id], base, f"TX {tx_idx + 1} ANC")
+            _set_grouphint(new_senders[snd_id], f"{base} TX {tx_idx + 1}", "anc")
             new_devices[did]["senders"].append(snd_id)
             smpte_d = bool(tslot.get("smpte_2022_7") or dc_params.get("smpte_2022_7"))
             mcast1_d = tslot.get("anc_multicast_ip_leg1")

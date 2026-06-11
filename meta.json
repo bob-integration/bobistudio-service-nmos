@@ -1,11 +1,13 @@
 {
-  "version": "0.1.0",
-  "published_at": "2026-06-01",
+  "version": "0.1.1",
+  "published_at": "2026-06-11",
   "changes": {
     "Nouveautés": [
       "Version initiale"
     ],
-    "Corrections": [],
+    "Corrections": [
+      "Senders du moteur bi-rôle (2110_io) regroupés PAR SLOT TX (natural grouping BCP-002-01) : la vidéo, l'audio et l'ANC d'un même slot partagent désormais le group-name « <hôte> TX <n> » avec un rôle = essence (video / audio N / anc), comme les receivers le sont par canal. Auparavant tous les senders TX partageaient un seul group-name (l'hôte) → les SDP n'étaient pas regroupés par canal côté contrôleur NMOS."
+    ],
     "Bugs connus": []
   }
 }
