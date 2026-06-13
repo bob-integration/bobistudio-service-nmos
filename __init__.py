@@ -1132,6 +1132,8 @@ def _activate_receiver(rid):
     # auto-détecte déjà depuis le shm ; ceci aligne les autres. En thread (hors _lock NMOS).
     if essence == "video" and master_enable and sdp:
         threading.Thread(target=_propagate_sdp_format, args=(vmid, sdp), daemon=True).start()
+    # Persiste l'état d'abonnement (survie au redémarrage de l'orchestrateur).
+    _persist_subscriptions()
 
 def _propagate_sdp_format(vmid, sdp):
     """Écrit width/height/fps/scan lus du SDP dans le deploy_config du receiver (si différent),
@@ -1272,6 +1274,92 @@ def _notify_agent(vmid, recv_idx, essence, enable, sdp, mcast_info):
     except Exception as e:
         log.warning(f"nmos: notification agent {vmid} échouée : {e}")
         db_add_alert(f"NMOS subscription container {vmid} : agent injoignable ({e})", "warning")
+
+
+def repush_subscriptions(vmid):
+    """Re-pousse vers le contrôleur (:8081/nmos/subscribe) TOUS les abonnements RX ACTIFS du
+    container `vmid`. Appelé après une (re)création du conteneur : ses fichiers SDP repartent de
+    zéro, mais `_recv_state` survit en mémoire (l'orchestrateur, lui, ne redémarre pas) → on
+    restaure les sessions RX SANS intervention du contrôleur NMOS externe (corrige la perte des
+    flux à chaque redéploiement). Attend d'abord que l'agent :8081 réponde."""
+    from app.proxmox import get_container_ip
+    import time as _t
+    ip = get_container_ip(vmid)
+    if not ip:
+        return 0
+    for _ in range(30):   # readiness :8081 (le contrôleur met quelques s à (re)démarrer)
+        try:
+            if requests.get(f"http://{ip}:8081/status", timeout=2).status_code == 200:
+                break
+        except Exception:
+            pass
+        _t.sleep(1)
+    n = 0
+    for rid, state in list(_recv_state.items()):
+        if state.get("vmid") != vmid:
+            continue
+        active = state.get("active") or {}
+        if not bool(active.get("master_enable")):
+            continue
+        sdp = (active.get("transport_file") or {}).get("data")
+        dual = len(active.get("transport_params") or []) >= 2
+        mcast_info = _extract_mcast_info(active, smpte_2022_7=dual)
+        _notify_agent(state["vmid"], state["recv_idx"], state.get("essence", "video"),
+                      True, sdp, mcast_info)
+        n += 1
+    if n:
+        log.info(f"nmos: {n} abonnement(s) RX re-poussé(s) sur container {vmid} après (re)déploiement")
+    return n
+
+
+def _persist_subscriptions():
+    """Sauvegarde en DB (settings) les abonnements RX ACTIFS (master_enable) → survivent à un
+    redémarrage de l'orchestrateur (l'état IS-05 vient du contrôleur externe, absent du deploy_config).
+    Appelé à chaque (dés)activation. _lock est ré-entrant (RLock) : sûr depuis _activate_receiver."""
+    import json as _json
+    from app.database import db_set_setting
+    out = {}
+    with _lock:
+        for rid, state in _recv_state.items():
+            active = state.get("active") or {}
+            if bool(active.get("master_enable")):
+                out[rid] = {"vmid": state.get("vmid"), "recv_idx": state.get("recv_idx"),
+                            "essence": state.get("essence"), "active": active}
+    try:
+        db_set_setting("nmos_subscriptions", _json.dumps(out))
+    except Exception as e:
+        log.warning(f"nmos: persistance abonnements échouée : {e}")
+
+
+def _restore_persisted_subscriptions():
+    """Au boot (après rebuild_model) : recharge les abonnements RX persistés dans _recv_state, met à
+    jour la subscription IS-04, puis re-pousse vers chaque contrôleur (en fond, attend la readiness).
+    Restaure les flux reçus sans intervention du contrôleur NMOS externe après un redémarrage."""
+    import json as _json
+    raw = _setting("nmos_subscriptions", "")
+    try:
+        subs = _json.loads(raw) if raw else {}
+    except Exception:
+        subs = {}
+    vmids = set()
+    with _lock:
+        for rid, info in subs.items():
+            if rid not in _recv_state:
+                continue   # le modèle ne contient pas (encore) ce receiver
+            active = info.get("active") or {}
+            if not bool(active.get("master_enable")):
+                continue
+            _recv_state[rid]["active"] = active
+            _recv_state[rid]["staged"] = _json.loads(_json.dumps(active))
+            if rid in _receivers:
+                _receivers[rid]["subscription"] = {
+                    "sender_id": active.get("sender_id"), "active": True}
+                _receivers[rid]["version"] = _tai_version()
+            vmids.add(_recv_state[rid]["vmid"])
+    for vmid in vmids:
+        threading.Thread(target=repush_subscriptions, args=(vmid,), daemon=True).start()
+    if vmids:
+        log.info(f"nmos: abonnements RX restaurés depuis la DB pour {len(vmids)} container(s)")
 
 # ═════════════════════════════════════════════════════════════════════
 # Client de registration (RDS)
@@ -1419,6 +1507,11 @@ def start(registry_url):
     _state["node_id"] = _get_node_id()
     _state["registry_url"] = (registry_url or "").rstrip("/") or None
     rebuild_model()
+    # Restaure les abonnements RX persistés (survie au redémarrage de l'orchestrateur) + re-push.
+    try:
+        _restore_persisted_subscriptions()
+    except Exception as e:
+        log.warning(f"nmos: restauration abonnements échouée : {e}")
     if _state["registry_url"]:
         _running = True
         _register_thread = threading.Thread(target=_register_loop, daemon=True)

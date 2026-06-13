@@ -1,7 +1,10 @@
 {
-  "version": "0.1.1",
-  "published_at": "2026-06-11",
+  "version": "0.1.2",
+  "published_at": "2026-06-13",
   "changes": {
+    "Nouveautés (0.1.2)": [
+      "Persistance des abonnements RX : les receivers actifs (IS-05) sont sauvegardés en DB (setting nmos_subscriptions) à chaque (dés)activation et re-poussés vers les contrôleurs (a) après une (re)création de conteneur (repush_subscriptions, appelé par docker_driver.deploy_docker) et (b) au démarrage de l'orchestrateur (_restore_persisted_subscriptions dans start()). Corrige la perte des flux reçus à chaque redéploiement / redémarrage (l'état d'abonnement vient du contrôleur NMOS externe, absent du deploy_config). Attend la readiness :8081 avant de re-pousser."
+    ],
     "Nouveautés": [
       "Version initiale"
     ],
