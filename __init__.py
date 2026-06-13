@@ -1073,27 +1073,33 @@ def is05_send_transportfile(sid):
     if not sdp:
         return ("sdp non encore disponible (slot TX pas câblé / pas d'émission ?)", 404)
 
-    # Upgrade PTP : le conteneur émet déjà un a=ts-refclk:localmac par section média (repli
-    # d'horloge conforme sans PTP). Si l'hôte est PTP locké, on REMPLACE chaque localmac par
-    # la forme PTP traçable (a=ts-refclk:ptp=IEEE1588-2008:<gm>:<domain>) — par section, dual-leg
-    # compris. ffmpeg/anciens conteneurs sans localmac : on insère la ligne PTP avant chaque
-    # a=mediaclk (repli à l'append si aucune). L'interop 2110 broadcast attend ce ts-refclk.
+    # Upgrade PTP : le conteneur émet a=ts-refclk:localmac par section média (repli d'horloge).
+    # On le REMPLACE par la forme traçable a=ts-refclk:ptp=IEEE1588-2008:<gm>:<domain> lue du ptp4l
+    # qui discipline RÉELLEMENT le nœud du sender — pas le conteneur (qui ne gère pas le PTP). Pour
+    # un moteur MTL (tx_idx), ce ptp4l tourne sur l'HÔTE du nœud (= `ip`, --network host) → on
+    # l'interroge par SSH pmc (caché, app/ptp.refclk_for_host), DÉCOUPLÉ de ptp_enabled (le nœud MTL
+    # a son ptp4l quoi qu'il arrive). Sinon (LXC legacy) : modèle host-ptp global gated ptp_enabled.
+    # Par section, dual-leg compris ; repli insertion avant a=mediaclk si pas de localmac.
     try:
         from app import settings as st, ptp as _ptp
-        if st.get("ptp_enabled"):
-            refclk = _ptp.sdp_refclk_lines(st.get("proxmox_host"))  # ts-refclk:ptp=… + mediaclk
-            ptp_line = next((ln for ln in refclk.splitlines() if "ts-refclk" in ln), "")
-            if ptp_line:
-                ptp_line += "\r\n"
-                if "ts-refclk:localmac=" in sdp:
-                    sdp = re.sub(r"a=ts-refclk:localmac=\S+\r?\n", ptp_line, sdp)
-                elif "ts-refclk" not in sdp:
-                    if "a=mediaclk" in sdp:
-                        sdp = re.sub(r"(a=mediaclk)", ptp_line + r"\1", sdp)
-                    else:
-                        if not sdp.endswith("\n"):
-                            sdp += "\r\n"
-                        sdp += ptp_line
+        if tx_idx is not None:
+            refclk = _ptp.refclk_for_host(ip)              # ptp4l du nœud du sender (domaine = réglage)
+        elif st.get("ptp_enabled"):
+            refclk = _ptp.sdp_refclk_lines(st.get("proxmox_host"))
+        else:
+            refclk = ""
+        ptp_line = next((ln for ln in refclk.splitlines() if "ts-refclk" in ln), "")
+        if ptp_line:
+            ptp_line += "\r\n"
+            if "ts-refclk:localmac=" in sdp:
+                sdp = re.sub(r"a=ts-refclk:localmac=\S+\r?\n", ptp_line, sdp)
+            elif "ts-refclk" not in sdp:
+                if "a=mediaclk" in sdp:
+                    sdp = re.sub(r"(a=mediaclk)", ptp_line + r"\1", sdp)
+                else:
+                    if not sdp.endswith("\n"):
+                        sdp += "\r\n"
+                    sdp += ptp_line
     except Exception as e:
         log.warning(f"sdp ptp injection skipped: {e}")
     return (sdp, 200, {"Content-Type": "application/sdp"})

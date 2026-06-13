@@ -1,7 +1,10 @@
 {
-  "version": "0.1.2",
+  "version": "0.1.3",
   "published_at": "2026-06-13",
   "changes": {
+    "Nouveautés (0.1.3)": [
+      "SDP TX a=ts-refclk:ptp depuis le bon nœud : l'upgrade du grandmaster (localmac → ts-refclk:ptp=IEEE1588-2008:<GM>:<domaine>) dans is05_send_transportfile interroge désormais le ptp4l de l'HÔTE DU NŒUD du sender (résolu via get_container_ip), pas le proxmox_host global. Pour un sender de moteur MTL (tx_idx présent) l'upgrade est DÉCOUPLÉ de ptp_enabled (le nœud MTL a son propre ptp4l) ; le LXC legacy garde le modèle host-ptp global gated ptp_enabled. Lecture cachée par hôte (app/ptp.refclk_for_host, TTL ~10 s) → pas de SSH pmc à chaque GET. Corrige l'échec d'abonnement NMOS sur récepteur PTP-strict (« Failed to fetch SDP ») dû au localmac. Le conteneur ne gère pas le PTP : il émet localmac, l'orchestrateur le remplace."
+    ],
     "Nouveautés (0.1.2)": [
       "Persistance des abonnements RX : les receivers actifs (IS-05) sont sauvegardés en DB (setting nmos_subscriptions) à chaque (dés)activation et re-poussés vers les contrôleurs (a) après une (re)création de conteneur (repush_subscriptions, appelé par docker_driver.deploy_docker) et (b) au démarrage de l'orchestrateur (_restore_persisted_subscriptions dans start()). Corrige la perte des flux reçus à chaque redéploiement / redémarrage (l'état d'abonnement vient du contrôleur NMOS externe, absent du deploy_config). Attend la readiness :8081 avant de re-pousser."
     ],
