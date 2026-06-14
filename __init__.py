@@ -1188,6 +1188,14 @@ def _propagate_sdp_format(vmid, sdp):
         notify_state_change()
     except Exception as e:
         log.warning("nmos: notify après propagation format vmid=%s: %s", vmid, e)
+    # Format source changé EN DIRECT (re-souscription / nouveau SDP) → rafraîchir à chaud les
+    # consommateurs (multiview : in_w/in_h + /reconfigure, + reconcile pyramide). Différé pour
+    # laisser le shm du RX se recréer à la nouvelle taille. Le câble/deploy_config porte le format.
+    try:
+        from app.deploy import _schedule_consumer_refresh
+        _schedule_consumer_refresh(vmid)
+    except Exception as e:
+        log.warning("nmos: refresh consommateurs après format vmid=%s: %s", vmid, e)
 
 
 def _build_dual_sdp(sdp_leg0, mcast1, port1):

@@ -1,7 +1,10 @@
 {
-  "version": "0.1.3",
-  "published_at": "2026-06-13",
+  "version": "0.1.4",
+  "published_at": "2026-06-14",
   "changes": {
+    "Nouveautés (0.1.4)": [
+      "Changement de format source EN DIRECT (re-souscription / nouveau SDP) → rafraîchit à chaud les consommateurs : _propagate_sdp_format déclenche app.deploy._schedule_consumer_refresh, qui recalcule in_w/in_h des fenêtres multiview lisant la source (via _shm_fmt) et pousse /reconfigure + relance le reconcile pyramide. Plus de dimensions périmées (octaves mal lus) quand un RX bascule de résolution sans redéploiement."
+    ],
     "Nouveautés (0.1.3)": [
       "SDP TX a=ts-refclk:ptp depuis le bon nœud : l'upgrade du grandmaster (localmac → ts-refclk:ptp=IEEE1588-2008:<GM>:<domaine>) dans is05_send_transportfile interroge désormais le ptp4l de l'HÔTE DU NŒUD du sender (résolu via get_container_ip), pas le proxmox_host global. Pour un sender de moteur MTL (tx_idx présent) l'upgrade est DÉCOUPLÉ de ptp_enabled (le nœud MTL a son propre ptp4l) ; le LXC legacy garde le modèle host-ptp global gated ptp_enabled. Lecture cachée par hôte (app/ptp.refclk_for_host, TTL ~10 s) → pas de SSH pmc à chaque GET. Corrige l'échec d'abonnement NMOS sur récepteur PTP-strict (« Failed to fetch SDP ») dû au localmac. Le conteneur ne gère pas le PTP : il émet localmac, l'orchestrateur le remplace."
     ],
