@@ -298,6 +298,44 @@ def _build_data_flow_resource(fid, did, src_id, vmid, label, version):
     }
 
 
+def _registry_id(current_seed, instance_uuid, slot_key, essence, kind,
+                 label="", transport=None, group_name="", role=""):
+    """C2a : id NMOS STABLE depuis le registre cluster (table nmos_resources), découplé du vmid.
+    Lookup par (instance_uuid, slot_key, essence, kind) :
+      - 1re fois (registre vide pour ce slot) → id = formule ACTUELLE (`_stable_uuid(current_seed)`,
+        seedée vmid) → PRÉSERVE l'UUID existant (abonnements IS-05 intacts) ;
+      - ensuite → id stable retrouvé via l'instance_uuid (survit recreate/projet, vmid changé).
+    Rafraîchit aussi label/transport/binding (le slot peut changer de conteneur). Sans instance_uuid
+    (ne devrait pas arriver post-C1) → fallback formule actuelle, hors registre."""
+    if not instance_uuid:
+        return _stable_uuid(current_seed)
+    from app.database import db_nmos_resource_get_by_bind, db_nmos_resource_upsert
+    ex = db_nmos_resource_get_by_bind(instance_uuid, slot_key, essence, kind)
+    rid = ex["id"] if ex else _stable_uuid(current_seed)
+    db_nmos_resource_upsert(rid, kind, essence, label, group_name, role,
+                            transport or {}, instance_uuid, slot_key)
+    return rid
+
+def _build_cluster_device_resource(did, version):
+    """C2a : Device de NIVEAU CLUSTER possédant TOUTES les ressources du registre, stable et
+    indépendant des conteneurs. Le contrôleur voit une seule I/O 2110 quels que soient les conteneurs
+    (ou nœuds) qui servent. Remplace les Devices par-conteneur (seedés sur le vmid)."""
+    return {
+        "id": did,
+        "version": version,
+        "label": _setting("nmos_cluster_label", "Bobi.Studio 2110 I/O"),
+        "description": "Cluster 2110 I/O — ressources stables, conteneurs bindés via instance_uuid",
+        "tags": {},
+        "type": "urn:x-nmos:device:generic",
+        "node_id": _state["node_id"],
+        "senders": [],
+        "receivers": [],
+        "controls": [{
+            "href": f"http://{_get_host_address()}:5000/x-nmos/connection/{IS05_VERSION}/",
+            "type": f"urn:x-nmos:control:sr-ctrl/{IS05_VERSION}",
+        }],
+    }
+
 def _build_device_resource(did, vmid, hostname, version):
     return {
         "id": did,
@@ -402,8 +440,13 @@ def rebuild_model():
     new_senders = {}
     new_sources = {}
     new_flows = {}
+    # C2a : un seul Device de NIVEAU CLUSTER (stable) possède toutes les ressources. Les senders/
+    # receivers y sont rattachés quel que soit le conteneur servant. (Remplace le device par-vmid.)
+    cluster_did = _stable_uuid("device:cluster")
+    new_devices[cluster_did] = _build_cluster_device_resource(cluster_did, version)
     for c in db_get_containers():
         vmid = c["vmid"]
+        instance_uuid = c.get("instance_uuid")
         dc = c.get("deploy_config")
         try:
             dc = json.loads(dc) if isinstance(dc, str) else dc
@@ -442,8 +485,8 @@ def rebuild_model():
         # Container exposé en NMOS s'il a au moins un receiver ou sender
         if (n_video + n_audio + n_data) <= 0 and not has_video_send and n_audio_send <= 0 and not tx_slots:
             continue
-        did = _stable_uuid(f"device:{vmid}")
-        new_devices[did] = _build_device_resource(did, vmid, c.get("hostname"), version)
+        # C2a : toutes les ressources sous le Device cluster stable (plus de device par-vmid).
+        did = cluster_did
         base = c.get("hostname") or f"container {vmid}"
 
         # Nom de bundle d'un ensemble : si plusieurs vidéos sur le container, on
@@ -453,8 +496,9 @@ def rebuild_model():
 
         # Receivers vidéo — un bundle (group_name) par vidéo
         for idx in range(n_video):
-            rid = _stable_uuid(f"receiver:v:{vmid}:{idx}")
             label = f"{c.get('hostname') or vmid} #r{idx} (video)"
+            rid = _registry_id(f"receiver:v:{vmid}:{idx}", instance_uuid, f"v:{idx}", "video",
+                               "receiver", label, {}, _grp_name(idx), "video")
             new_receivers[rid] = _build_receiver_resource(rid, did, vmid, idx, label, version, fmt="video")
             _set_grouphint(new_receivers[rid], _grp_name(idx), "video")
             new_devices[did]["receivers"].append(rid)
@@ -468,12 +512,13 @@ def rebuild_model():
         # Receivers audio — rattachés au bundle vidéo (audio j → vidéo j % n_video)
         _audio_role_ctr = {}
         for idx in range(n_audio):
-            rid = _stable_uuid(f"receiver:a:{vmid}:{idx}")
             label = f"{c.get('hostname') or vmid} #ra{idx} (audio)"
-            new_receivers[rid] = _build_receiver_resource(rid, did, vmid, idx, label, version, fmt="audio")
             grp = _grp_name(idx % n_video) if n_video > 0 else base
             n = _audio_role_ctr.get(grp, 0) + 1
             _audio_role_ctr[grp] = n
+            rid = _registry_id(f"receiver:a:{vmid}:{idx}", instance_uuid, f"a:{idx}", "audio",
+                               "receiver", label, {}, grp, f"audio {n}")
+            new_receivers[rid] = _build_receiver_resource(rid, did, vmid, idx, label, version, fmt="audio")
             _set_grouphint(new_receivers[rid], grp, f"audio {n}")
             new_devices[did]["receivers"].append(rid)
             cur = _recv_state.get(rid)
@@ -486,12 +531,13 @@ def rebuild_model():
         # Receivers ANC (2110-40 / data) — rattachés au bundle vidéo (anc j → vidéo j % n_video)
         _data_role_ctr = {}
         for idx in range(n_data):
-            rid = _stable_uuid(f"receiver:d:{vmid}:{idx}")
             label = f"{c.get('hostname') or vmid} #rd{idx} (anc)"
-            new_receivers[rid] = _build_receiver_resource(rid, did, vmid, idx, label, version, fmt="data")
             grp = _grp_name(idx % n_video) if n_video > 0 else base
             n = _data_role_ctr.get(grp, 0) + 1
             _data_role_ctr[grp] = n
+            rid = _registry_id(f"receiver:d:{vmid}:{idx}", instance_uuid, f"d:{idx}", "data",
+                               "receiver", label, {}, grp, f"anc {n}")
+            new_receivers[rid] = _build_receiver_resource(rid, did, vmid, idx, label, version, fmt="data")
             _set_grouphint(new_receivers[rid], grp, f"anc {n}")
             new_devices[did]["receivers"].append(rid)
             cur = _recv_state.get(rid)
@@ -518,10 +564,13 @@ def rebuild_model():
                 cs, transfer = COLORIMETRY[_colo]["nmos_colorspace"], COLORIMETRY[_colo]["nmos_transfer"]
             else:   # fallback : déduire des color_* ffmpeg si présents, sinon BT709/SDR
                 cs, transfer = nmos_colorimetry(v.get("color_primaries"), v.get("color_trc"))
-            src_id = _stable_uuid(f"source:v:{vmid}")
-            fid    = _stable_uuid(f"flow:v:{vmid}")
-            snd_id = _stable_uuid(f"sender:v:{vmid}")
             label  = f"{c.get('hostname') or vmid} 2110-20"
+            _tr = {"multicast_ip": mcast, "port": port, "width": width, "height": height,
+                   "chroma": chroma, "bit_depth": bit_depth}
+            snd_id = _registry_id(f"sender:v:{vmid}", instance_uuid, "v", "video",
+                                  "sender", label, _tr, base, "video")
+            src_id = _stable_uuid(f"source:{snd_id}")
+            fid    = _stable_uuid(f"flow:{snd_id}")
             _scan = str(_pp.get("scan") or v.get("scan") or "p")
             _fo   = str(_pp.get("field_order") or v.get("field_order") or "")
             new_sources[src_id] = _build_source_resource(src_id, did, vmid, label, version)
@@ -579,10 +628,13 @@ def rebuild_model():
                     _src_fmt = {}
             _scan = str(_src_fmt.get("scan") or dc_params.get("scan") or "p")
             _fo   = str(_src_fmt.get("field_order") or dc_params.get("field_order") or "")
-            src_id = _stable_uuid(f"source:v:{vmid}:tx{tx_idx}")
-            fid    = _stable_uuid(f"flow:v:{vmid}:tx{tx_idx}")
-            snd_id = _stable_uuid(f"sender:v:{vmid}:tx{tx_idx}")
             label  = f"{c.get('hostname') or vmid} TX{tx_idx} 2110-20"
+            _tr = {"multicast_ip": mcast, "port": port, "width": width, "height": height,
+                   "chroma": chroma, "bit_depth": bit_depth}
+            snd_id = _registry_id(f"sender:v:{vmid}:tx{tx_idx}", instance_uuid, f"tx{tx_idx}:v", "video",
+                                  "sender", label, _tr, f"{base} TX {tx_idx + 1}", "video")
+            src_id = _stable_uuid(f"source:{snd_id}")
+            fid    = _stable_uuid(f"flow:{snd_id}")
             new_sources[src_id] = _build_source_resource(src_id, did, vmid, label, version)
             new_flows[fid]      = _build_flow_resource(fid, did, src_id, vmid, label, width, height,
                                                        version, chroma, bit_depth, cs, transfer, _scan, _fo)
@@ -616,10 +668,11 @@ def rebuild_model():
         for a_idx, a in enumerate((dc.get("params") or {}).get("audios") or []):
             mcast = a.get("multicast_ip") or "239.10.20.1"
             port  = int(a.get("dest_port") or (5004 + 2 * a_idx))
-            src_id = _stable_uuid(f"source:a:{vmid}:{a_idx}")
-            fid    = _stable_uuid(f"flow:a:{vmid}:{a_idx}")
-            snd_id = _stable_uuid(f"sender:a:{vmid}:{a_idx}")
             label  = f"{c.get('hostname') or vmid} 2110-30 #{a_idx}"
+            snd_id = _registry_id(f"sender:a:{vmid}:{a_idx}", instance_uuid, f"a:{a_idx}", "audio",
+                                  "sender", label, {"multicast_ip": mcast, "port": port}, base, f"audio {a_idx + 1}")
+            src_id = _stable_uuid(f"source:{snd_id}")
+            fid    = _stable_uuid(f"flow:{snd_id}")
             new_sources[src_id] = _build_audio_source_resource(src_id, did, vmid, label, version)
             new_flows[fid]      = _build_audio_flow_resource(fid, did, src_id, vmid, label, version)
             new_senders[snd_id] = _build_sender_resource(snd_id, did, fid, vmid, label, version)
@@ -648,10 +701,13 @@ def rebuild_model():
                 if not mcast:
                     continue
                 port   = int(acfg.get("dest_port") or 0)
-                src_id = _stable_uuid(f"source:a:{vmid}:tx{tx_idx}:{ai}")
-                fid    = _stable_uuid(f"flow:a:{vmid}:tx{tx_idx}:{ai}")
-                snd_id = _stable_uuid(f"sender:a:{vmid}:tx{tx_idx}:{ai}")
                 label  = f"{c.get('hostname') or vmid} TX{tx_idx} 2110-30 #{ai}"
+                snd_id = _registry_id(f"sender:a:{vmid}:tx{tx_idx}:{ai}", instance_uuid,
+                                      f"tx{tx_idx}:a{ai}", "audio", "sender", label,
+                                      {"multicast_ip": mcast, "port": port},
+                                      f"{base} TX {tx_idx + 1}", f"audio {ai + 1}")
+                src_id = _stable_uuid(f"source:{snd_id}")
+                fid    = _stable_uuid(f"flow:{snd_id}")
                 new_sources[src_id] = _build_audio_source_resource(src_id, did, vmid, label, version)
                 new_flows[fid]      = _build_audio_flow_resource(fid, did, src_id, vmid, label, version)
                 new_senders[snd_id] = _build_sender_resource(snd_id, did, fid, vmid, label, version)
@@ -679,10 +735,12 @@ def rebuild_model():
             if not mcast:
                 continue
             port = int(tslot.get("anc_dest_port") or 0)
-            src_id = _stable_uuid(f"source:d:{vmid}:tx{tx_idx}")
-            fid    = _stable_uuid(f"flow:d:{vmid}:tx{tx_idx}")
-            snd_id = _stable_uuid(f"sender:d:{vmid}:tx{tx_idx}")
             label  = f"{c.get('hostname') or vmid} TX{tx_idx} 2110-40"
+            snd_id = _registry_id(f"sender:d:{vmid}:tx{tx_idx}", instance_uuid, f"tx{tx_idx}:d", "data",
+                                  "sender", label, {"multicast_ip": mcast, "port": port},
+                                  f"{base} TX {tx_idx + 1}", "anc")
+            src_id = _stable_uuid(f"source:{snd_id}")
+            fid    = _stable_uuid(f"flow:{snd_id}")
             new_sources[src_id] = _build_data_source_resource(src_id, did, vmid, label, version)
             new_flows[fid]      = _build_data_flow_resource(fid, did, src_id, vmid, label, version)
             new_senders[snd_id] = _build_sender_resource(snd_id, did, fid, vmid, label, version)
@@ -881,6 +939,24 @@ def receiver_rid_for(vmid, recv_idx, essence="video"):
         if (s.get("vmid") == int(vmid) and s.get("recv_idx") == int(recv_idx)
                 and s.get("essence", "video") == essence):
             return rid
+    return None
+
+
+def sender_sid_for(vmid, tx_idx=None, essence="video", audio_idx=None):
+    """(vmid, tx_idx, essence[, audio_idx]) → sender_id NMOS courant, ou None.
+    C2a : l'id sender vient du registre cluster (plus seedé sur le vmid) ; ce résolveur
+    découple les appelants (routes.py page I/O) du vmid → après un recreate « déplacement »
+    (même instance_uuid, vmid changé) l'id reste celui du registre."""
+    for sid, s in _send_state.items():
+        if s.get("vmid") != int(vmid):
+            continue
+        if s.get("tx_idx") != tx_idx:
+            continue
+        if s.get("essence", "video") != essence:
+            continue
+        if essence == "audio" and audio_idx is not None and s.get("audio_idx") != audio_idx:
+            continue
+        return sid
     return None
 
 

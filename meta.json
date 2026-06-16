@@ -1,7 +1,10 @@
 {
-  "version": "0.1.4",
-  "published_at": "2026-06-14",
+  "version": "0.1.5",
+  "published_at": "2026-06-17",
   "changes": {
+    "Nouveautés (0.1.5)": [
+      "NMOS = registre de ressources de NIVEAU CLUSTER (C2a). rebuild_model expose désormais un Device cluster unique et stable (« Bobi.Studio 2110 I/O », id _stable_uuid(\"device:cluster\")) qui possède TOUS les senders/receivers, à la place des Devices par-conteneur seedés sur le vmid. Chaque sender/receiver obtient son UUID via le registre persistant (table nmos_resources) : à la 1re immatriculation l'UUID ACTUEL (seedé vmid) est PRÉSERVÉ — abonnements IS-05 intacts — puis l'identité est bindée sur l'instance_uuid du conteneur (C1). Conséquence : recreate / rappel de projet / changement de conteneur (déplacement = même instance_uuid) conserve le MÊME UUID + SDP + multicast NMOS ; une copie (nouvel instance_uuid) mint de nouvelles ressources. Source/Flow dérivés de l'UUID sender stable. Nouveau résolveur sender_sid_for(vmid, tx_idx, essence) pour découpler la page I/O du vmid. Réglage nmos_cluster_label pour le libellé du Device cluster."
+    ],
     "Nouveautés (0.1.4)": [
       "Changement de format source EN DIRECT (re-souscription / nouveau SDP) → rafraîchit à chaud les consommateurs : _propagate_sdp_format déclenche app.deploy._schedule_consumer_refresh, qui recalcule in_w/in_h des fenêtres multiview lisant la source (via _shm_fmt) et pousse /reconfigure + relance le reconcile pyramide. Plus de dimensions périmées (octaves mal lus) quand un RX bascule de résolution sans redéploiement."
     ],
