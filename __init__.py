@@ -1285,7 +1285,7 @@ def is05_send_transportfile(sid):
         snd_aidx = _send_state[sid].get("audio_idx")   # désambiguïse les 2 flux audio d'un même slot
     if vmid is None:   # C2b : ressource orpheline (servie par aucun conteneur live) → pas de SDP
         return ("sender orphelin (servi par aucun conteneur)", 503)
-    from app.proxmox import get_container_ip
+    from app.addressing import get_container_ip
     ip = get_container_ip(vmid)
     if not ip:
         return ("container IP introuvable", 503)
@@ -1478,7 +1478,7 @@ def _extract_mcast_info(active, smpte_2022_7=False):
 
 def _notify_agent(vmid, recv_idx, essence, enable, sdp, mcast_info):
     """POST l'info de subscription à l'agent du container (port 8081)."""
-    from app.proxmox import get_container_ip
+    from app.addressing import get_container_ip
     from app.database import db_add_alert
     ip = get_container_ip(vmid)
     if not ip:
@@ -1531,7 +1531,7 @@ def repush_subscriptions(vmid):
     zéro, mais `_recv_state` survit en mémoire (l'orchestrateur, lui, ne redémarre pas) → on
     restaure les sessions RX SANS intervention du contrôleur NMOS externe (corrige la perte des
     flux à chaque redéploiement). Attend d'abord que l'agent :8081 réponde."""
-    from app.proxmox import get_container_ip
+    from app.addressing import get_container_ip
     import time as _t
     ip = get_container_ip(vmid)
     if not ip:
