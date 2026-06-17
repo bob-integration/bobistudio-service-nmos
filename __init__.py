@@ -1317,10 +1317,11 @@ def is05_send_transportfile(sid):
     # Par section, dual-leg compris ; repli insertion avant a=mediaclk si pas de localmac.
     try:
         from app import settings as st, ptp as _ptp
+        from app.addressing import primary_host as _primary_host
         if tx_idx is not None:
             refclk = _ptp.refclk_for_host(ip)              # ptp4l du nœud du sender (domaine = réglage)
         elif st.get("ptp_enabled"):
-            refclk = _ptp.sdp_refclk_lines(st.get("proxmox_host"))
+            refclk = _ptp.sdp_refclk_lines(_primary_host())   # B1a : hôte du nœud (B1b : par-nœud)
         else:
             refclk = ""
         ptp_line = next((ln for ln in refclk.splitlines() if "ts-refclk" in ln), "")
@@ -2124,6 +2125,7 @@ def register_routes(bp):
     @require_login
     def nmos_sriov_status():
         from app import settings as _st
+        from app.addressing import primary_host
         from app.template_recreate import list_vfs
         from app.database import db_get_assigned_vfs
         pf       = _st.get("nmos_2110_pf") or ""
@@ -2132,7 +2134,7 @@ def register_routes(bp):
         vfs = []
         err = None
         if enabled and pf:
-            ok, lst, msg = list_vfs(_st.get("proxmox_host"), pf)
+            ok, lst, msg = list_vfs(primary_host(), pf)
             if ok:
                 vfs = lst
             else:
@@ -2151,30 +2153,33 @@ def register_routes(bp):
     @require_perm("settings.edit")
     def nmos_sriov_init():
         from app import settings as _st
+        from app.addressing import primary_host
         from app.template_recreate import ensure_sriov_pool
         pf = _st.get("nmos_2110_pf") or ""
         n  = int(_st.get("nmos_2110_vf_count") or 0)
         if not pf:
             return jsonify({"ok": False, "error": "nmos_2110_pf non renseigné"}), 400
-        ok, msg = ensure_sriov_pool(_st.get("proxmox_host"), pf, n)
+        ok, msg = ensure_sriov_pool(primary_host(), pf, n)
         return jsonify({"ok": ok, "msg": msg})
 
     @bp.route("/api/nmos/sriov/reconcile", methods=["GET"])
     @require_login
     def nmos_sriov_reconcile():
         from app import settings as _st
+        from app.addressing import primary_host
         from app.template_recreate import reconcile_vf_assignments
         pf = _st.get("nmos_2110_pf") or ""
         if not pf:
             return jsonify({"ok": False, "error": "nmos_2110_pf non renseigné"}), 400
-        return jsonify(reconcile_vf_assignments(_st.get("proxmox_host"), pf))
+        return jsonify(reconcile_vf_assignments(primary_host(), pf))
 
     @bp.route("/api/nmos/sriov/fix", methods=["POST"])
     @require_perm("settings.edit")
     def nmos_sriov_fix():
         from app import settings as _st
+        from app.addressing import primary_host
         from app.template_recreate import fix_vf_assignments
         pf = _st.get("nmos_2110_pf") or ""
         if not pf:
             return jsonify({"ok": False, "error": "nmos_2110_pf non renseigné"}), 400
-        return jsonify(fix_vf_assignments(_st.get("proxmox_host"), pf))
+        return jsonify(fix_vf_assignments(primary_host(), pf))
