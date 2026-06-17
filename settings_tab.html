@@ -42,4 +42,51 @@
         </div>
         <div id="nmos_status_error" class="meta" style="margin-top:var(--space-2); color: var(--status-stopped-fg)"></div>
     </div>
+
+    <h2>Registre de ressources (cluster)</h2>
+    <div class="form">
+        <div class="meta" style="margin-bottom:var(--space-2)">
+            Liste NMOS de <b>niveau cluster</b> : chaque sender/receiver garde son UUID quel que soit le
+            conteneur qui le sert (lié par <code>instance_uuid</code>). Une ressource qu'aucun conteneur
+            ne sert reste <b>exposée</b> (orpheline, inactive) — le routage du contrôleur survit. Le
+            relabel est persistant ; on peut supprimer une orpheline ou en créer une à l'avance.
+        </div>
+        <div class="row">
+            <div class="field" style="flex:1"><label>Label du Device cluster</label>
+                <input type="text" id="s_nmos_cluster_label" class="wide"></div>
+            <button class="btn btn-green" onclick="nmosApplyClusterLabel()" style="align-self:flex-end">Appliquer le label</button>
+        </div>
+        <div id="nmos_registry_msg" class="meta" style="margin:var(--space-2) 0"></div>
+        <div style="overflow-x:auto">
+        <table id="nmos_registry_table" style="width:100%; border-collapse:collapse; font-size:0.85em">
+            <thead><tr style="text-align:left; border-bottom:1px solid var(--border)">
+                <th style="padding:var(--space-1)">Essence</th>
+                <th style="padding:var(--space-1)">Libellé</th>
+                <th style="padding:var(--space-1)">UUID</th>
+                <th style="padding:var(--space-1)">Servi par</th>
+                <th style="padding:var(--space-1)">État</th>
+                <th style="padding:var(--space-1)">Transport</th>
+                <th style="padding:var(--space-1)"></th>
+            </tr></thead>
+            <tbody id="nmos_registry_tbody"><tr><td colspan="7" class="meta" style="padding:var(--space-2)">—</td></tr></tbody>
+        </table>
+        </div>
+
+        <details style="margin-top:var(--space-3)">
+            <summary style="cursor:pointer; font-weight:600">+ Créer une ressource (réservation)</summary>
+            <div class="row" style="margin-top:var(--space-2); flex-wrap:wrap; gap:var(--space-2); align-items:flex-end">
+                <div class="field"><label>Type</label>
+                    <select id="nmos_new_kind"><option value="sender">Sender</option><option value="receiver">Receiver</option></select></div>
+                <div class="field"><label>Essence</label>
+                    <select id="nmos_new_essence"><option value="video">Vidéo</option><option value="audio">Audio</option><option value="data">ANC / Data</option></select></div>
+                <div class="field" style="flex:1; min-width:180px"><label>Libellé</label>
+                    <input type="text" id="nmos_new_label" placeholder="Caméra 1"></div>
+                <div class="field"><label>Multicast</label>
+                    <input type="text" id="nmos_new_mcast" placeholder="239.10.10.1" style="width:130px"></div>
+                <div class="field"><label>Port</label>
+                    <input type="number" id="nmos_new_port" placeholder="5000" style="width:90px"></div>
+                <button class="btn btn-green" onclick="nmosRegistryCreate()">Créer</button>
+            </div>
+        </details>
+    </div>
 </div>

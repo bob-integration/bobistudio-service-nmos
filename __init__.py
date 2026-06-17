@@ -306,15 +306,20 @@ def _registry_id(current_seed, instance_uuid, slot_key, essence, kind,
         seedée vmid) → PRÉSERVE l'UUID existant (abonnements IS-05 intacts) ;
       - ensuite → id stable retrouvé via l'instance_uuid (survit recreate/projet, vmid changé).
     Rafraîchit aussi label/transport/binding (le slot peut changer de conteneur). Sans instance_uuid
-    (ne devrait pas arriver post-C1) → fallback formule actuelle, hors registre."""
+    (ne devrait pas arriver post-C1) → fallback formule actuelle, hors registre.
+    Renvoie `(id, label_effectif)` : si l'op a figé le libellé (label_locked), `label_effectif` est
+    celui du registre → le caller construit la ressource avec, pas avec le hostname du conteneur."""
     if not instance_uuid:
-        return _stable_uuid(current_seed)
+        return _stable_uuid(current_seed), label
     from app.database import db_nmos_resource_get_by_bind, db_nmos_resource_upsert
     ex = db_nmos_resource_get_by_bind(instance_uuid, slot_key, essence, kind)
     rid = ex["id"] if ex else _stable_uuid(current_seed)
-    db_nmos_resource_upsert(rid, kind, essence, label, group_name, role,
+    # C2b : si le libellé a été figé par l'op (label_locked), on le PRÉSERVE (ne pas réécrire avec le
+    # hostname du conteneur) ; sinon il suit le conteneur servant.
+    eff_label = ex["label"] if (ex and ex.get("label_locked")) else label
+    db_nmos_resource_upsert(rid, kind, essence, eff_label, group_name, role,
                             transport or {}, instance_uuid, slot_key)
-    return rid
+    return rid, eff_label
 
 def _build_cluster_device_resource(did, version):
     """C2a : Device de NIVEAU CLUSTER possédant TOUTES les ressources du registre, stable et
@@ -335,6 +340,42 @@ def _build_cluster_device_resource(did, version):
             "type": f"urn:x-nmos:control:sr-ctrl/{IS05_VERSION}",
         }],
     }
+
+def _build_orphan_resources(row, version, did):
+    """C2b : reconstruit une ressource NMOS INACTIVE depuis une ligne du registre dont aucun conteneur
+    live ne la sert (orpheline). Transport figé depuis le registre, rattachée au Device cluster, vmid
+    None. Renvoie un dict {senders/receivers/sources/flows: {id: resource}} à fusionner."""
+    rid = row["id"]; essence = row.get("essence") or "video"; kind = row.get("kind") or "sender"
+    label = row.get("label") or rid[:8]; tr = row.get("transport") or {}
+    group = row.get("group_name") or label; role = row.get("role") or essence
+    out = {"senders": {}, "receivers": {}, "sources": {}, "flows": {}}
+    if kind == "receiver":
+        fmt = {"video": "video", "audio": "audio", "data": "data"}.get(essence, "video")
+        rec = _build_receiver_resource(rid, did, None, 0, label, version, fmt=fmt)
+        _set_grouphint(rec, group, role)
+        out["receivers"][rid] = rec
+        return out
+    # sender : source + flow + sender selon l'essence
+    src_id = _stable_uuid(f"source:{rid}"); fid = _stable_uuid(f"flow:{rid}")
+    if essence == "audio":
+        out["sources"][src_id] = _build_audio_source_resource(src_id, did, None, label, version)
+        out["flows"][fid]      = _build_audio_flow_resource(fid, did, src_id, None, label, version)
+    elif essence == "data":
+        out["sources"][src_id] = _build_data_source_resource(src_id, did, None, label, version)
+        out["flows"][fid]      = _build_data_flow_resource(fid, did, src_id, None, label, version)
+    else:  # video
+        width  = int(tr.get("width") or 1280); height = int(tr.get("height") or 720)
+        chroma = str(tr.get("chroma") or "422"); bd = tr.get("bit_depth") or 10
+        cs     = tr.get("colorspace") or "BT709"; transfer = tr.get("transfer") or "SDR"
+        scan   = str(tr.get("scan") or "p"); fo = str(tr.get("field_order") or "")
+        out["sources"][src_id] = _build_source_resource(src_id, did, None, label, version)
+        out["flows"][fid]      = _build_flow_resource(fid, did, src_id, None, label, width, height,
+                                                      version, chroma, bd, cs, transfer, scan, fo)
+    snd = _build_sender_resource(rid, did, fid, None, label, version)
+    _set_grouphint(snd, group, role)
+    out["senders"][rid] = snd
+    return out
+
 
 def _build_device_resource(did, vmid, hostname, version):
     return {
@@ -497,8 +538,8 @@ def rebuild_model():
         # Receivers vidéo — un bundle (group_name) par vidéo
         for idx in range(n_video):
             label = f"{c.get('hostname') or vmid} #r{idx} (video)"
-            rid = _registry_id(f"receiver:v:{vmid}:{idx}", instance_uuid, f"v:{idx}", "video",
-                               "receiver", label, {}, _grp_name(idx), "video")
+            rid, label = _registry_id(f"receiver:v:{vmid}:{idx}", instance_uuid, f"v:{idx}", "video",
+                                      "receiver", label, {}, _grp_name(idx), "video")
             new_receivers[rid] = _build_receiver_resource(rid, did, vmid, idx, label, version, fmt="video")
             _set_grouphint(new_receivers[rid], _grp_name(idx), "video")
             new_devices[did]["receivers"].append(rid)
@@ -516,8 +557,8 @@ def rebuild_model():
             grp = _grp_name(idx % n_video) if n_video > 0 else base
             n = _audio_role_ctr.get(grp, 0) + 1
             _audio_role_ctr[grp] = n
-            rid = _registry_id(f"receiver:a:{vmid}:{idx}", instance_uuid, f"a:{idx}", "audio",
-                               "receiver", label, {}, grp, f"audio {n}")
+            rid, label = _registry_id(f"receiver:a:{vmid}:{idx}", instance_uuid, f"a:{idx}", "audio",
+                                      "receiver", label, {}, grp, f"audio {n}")
             new_receivers[rid] = _build_receiver_resource(rid, did, vmid, idx, label, version, fmt="audio")
             _set_grouphint(new_receivers[rid], grp, f"audio {n}")
             new_devices[did]["receivers"].append(rid)
@@ -535,8 +576,8 @@ def rebuild_model():
             grp = _grp_name(idx % n_video) if n_video > 0 else base
             n = _data_role_ctr.get(grp, 0) + 1
             _data_role_ctr[grp] = n
-            rid = _registry_id(f"receiver:d:{vmid}:{idx}", instance_uuid, f"d:{idx}", "data",
-                               "receiver", label, {}, grp, f"anc {n}")
+            rid, label = _registry_id(f"receiver:d:{vmid}:{idx}", instance_uuid, f"d:{idx}", "data",
+                                      "receiver", label, {}, grp, f"anc {n}")
             new_receivers[rid] = _build_receiver_resource(rid, did, vmid, idx, label, version, fmt="data")
             _set_grouphint(new_receivers[rid], grp, f"anc {n}")
             new_devices[did]["receivers"].append(rid)
@@ -565,14 +606,15 @@ def rebuild_model():
             else:   # fallback : déduire des color_* ffmpeg si présents, sinon BT709/SDR
                 cs, transfer = nmos_colorimetry(v.get("color_primaries"), v.get("color_trc"))
             label  = f"{c.get('hostname') or vmid} 2110-20"
-            _tr = {"multicast_ip": mcast, "port": port, "width": width, "height": height,
-                   "chroma": chroma, "bit_depth": bit_depth}
-            snd_id = _registry_id(f"sender:v:{vmid}", instance_uuid, "v", "video",
-                                  "sender", label, _tr, base, "video")
-            src_id = _stable_uuid(f"source:{snd_id}")
-            fid    = _stable_uuid(f"flow:{snd_id}")
             _scan = str(_pp.get("scan") or v.get("scan") or "p")
             _fo   = str(_pp.get("field_order") or v.get("field_order") or "")
+            _tr = {"multicast_ip": mcast, "port": port, "width": width, "height": height,
+                   "chroma": chroma, "bit_depth": bit_depth, "colorspace": cs, "transfer": transfer,
+                   "scan": _scan, "field_order": _fo}
+            snd_id, label = _registry_id(f"sender:v:{vmid}", instance_uuid, "v", "video",
+                                         "sender", label, _tr, base, "video")
+            src_id = _stable_uuid(f"source:{snd_id}")
+            fid    = _stable_uuid(f"flow:{snd_id}")
             new_sources[src_id] = _build_source_resource(src_id, did, vmid, label, version)
             new_flows[fid]      = _build_flow_resource(fid, did, src_id, vmid, label, width, height,
                                                        version, chroma, bit_depth, cs, transfer, _scan, _fo)
@@ -630,9 +672,10 @@ def rebuild_model():
             _fo   = str(_src_fmt.get("field_order") or dc_params.get("field_order") or "")
             label  = f"{c.get('hostname') or vmid} TX{tx_idx} 2110-20"
             _tr = {"multicast_ip": mcast, "port": port, "width": width, "height": height,
-                   "chroma": chroma, "bit_depth": bit_depth}
-            snd_id = _registry_id(f"sender:v:{vmid}:tx{tx_idx}", instance_uuid, f"tx{tx_idx}:v", "video",
-                                  "sender", label, _tr, f"{base} TX {tx_idx + 1}", "video")
+                   "chroma": chroma, "bit_depth": bit_depth, "colorspace": cs, "transfer": transfer,
+                   "scan": _scan, "field_order": _fo}
+            snd_id, label = _registry_id(f"sender:v:{vmid}:tx{tx_idx}", instance_uuid, f"tx{tx_idx}:v",
+                                         "video", "sender", label, _tr, f"{base} TX {tx_idx + 1}", "video")
             src_id = _stable_uuid(f"source:{snd_id}")
             fid    = _stable_uuid(f"flow:{snd_id}")
             new_sources[src_id] = _build_source_resource(src_id, did, vmid, label, version)
@@ -669,8 +712,8 @@ def rebuild_model():
             mcast = a.get("multicast_ip") or "239.10.20.1"
             port  = int(a.get("dest_port") or (5004 + 2 * a_idx))
             label  = f"{c.get('hostname') or vmid} 2110-30 #{a_idx}"
-            snd_id = _registry_id(f"sender:a:{vmid}:{a_idx}", instance_uuid, f"a:{a_idx}", "audio",
-                                  "sender", label, {"multicast_ip": mcast, "port": port}, base, f"audio {a_idx + 1}")
+            snd_id, label = _registry_id(f"sender:a:{vmid}:{a_idx}", instance_uuid, f"a:{a_idx}", "audio",
+                                         "sender", label, {"multicast_ip": mcast, "port": port}, base, f"audio {a_idx + 1}")
             src_id = _stable_uuid(f"source:{snd_id}")
             fid    = _stable_uuid(f"flow:{snd_id}")
             new_sources[src_id] = _build_audio_source_resource(src_id, did, vmid, label, version)
@@ -702,10 +745,10 @@ def rebuild_model():
                     continue
                 port   = int(acfg.get("dest_port") or 0)
                 label  = f"{c.get('hostname') or vmid} TX{tx_idx} 2110-30 #{ai}"
-                snd_id = _registry_id(f"sender:a:{vmid}:tx{tx_idx}:{ai}", instance_uuid,
-                                      f"tx{tx_idx}:a{ai}", "audio", "sender", label,
-                                      {"multicast_ip": mcast, "port": port},
-                                      f"{base} TX {tx_idx + 1}", f"audio {ai + 1}")
+                snd_id, label = _registry_id(f"sender:a:{vmid}:tx{tx_idx}:{ai}", instance_uuid,
+                                             f"tx{tx_idx}:a{ai}", "audio", "sender", label,
+                                             {"multicast_ip": mcast, "port": port},
+                                             f"{base} TX {tx_idx + 1}", f"audio {ai + 1}")
                 src_id = _stable_uuid(f"source:{snd_id}")
                 fid    = _stable_uuid(f"flow:{snd_id}")
                 new_sources[src_id] = _build_audio_source_resource(src_id, did, vmid, label, version)
@@ -736,9 +779,9 @@ def rebuild_model():
                 continue
             port = int(tslot.get("anc_dest_port") or 0)
             label  = f"{c.get('hostname') or vmid} TX{tx_idx} 2110-40"
-            snd_id = _registry_id(f"sender:d:{vmid}:tx{tx_idx}", instance_uuid, f"tx{tx_idx}:d", "data",
-                                  "sender", label, {"multicast_ip": mcast, "port": port},
-                                  f"{base} TX {tx_idx + 1}", "anc")
+            snd_id, label = _registry_id(f"sender:d:{vmid}:tx{tx_idx}", instance_uuid, f"tx{tx_idx}:d",
+                                         "data", "sender", label, {"multicast_ip": mcast, "port": port},
+                                         f"{base} TX {tx_idx + 1}", "anc")
             src_id = _stable_uuid(f"source:{snd_id}")
             fid    = _stable_uuid(f"flow:{snd_id}")
             new_sources[src_id] = _build_data_source_resource(src_id, did, vmid, label, version)
@@ -760,6 +803,37 @@ def rebuild_model():
             else:
                 _send_state[snd_id]["multicast_ip"] = mcast
                 _send_state[snd_id]["destination_port"] = port
+
+    # C2b : passe REGISTRE — ressources orphelines (servies par aucun conteneur live ce rebuild).
+    # Restent exposées sous le Device cluster, INACTIVES, transport figé depuis le registre → le
+    # routage et les abonnements RX d'un contrôleur survivent à la disparition du conteneur. Dédup
+    # par `built` (ne pas réécrire celles déjà construites par la passe conteneurs).
+    from app.database import db_nmos_resources as _db_nmos_resources
+    built = set(new_senders) | set(new_receivers)
+    for row in _db_nmos_resources():
+        if row["id"] in built:
+            continue
+        parts = _build_orphan_resources(row, version, cluster_did)
+        new_senders.update(parts["senders"]);   new_receivers.update(parts["receivers"])
+        new_sources.update(parts["sources"]);    new_flows.update(parts["flows"])
+        tr = row.get("transport") or {}
+        for sid in parts["senders"]:
+            new_devices[cluster_did]["senders"].append(sid)
+            if sid not in _send_state:
+                empty = _empty_sender_staged(tr.get("multicast_ip") or "239.0.0.1",
+                                             tr.get("port") or 0)
+                _send_state[sid] = {
+                    "staged": empty, "active": json.loads(json.dumps(empty)),
+                    "vmid": None, "multicast_ip": tr.get("multicast_ip"),
+                    "destination_port": tr.get("port"), "essence": row.get("essence"),
+                }
+        for rcv in parts["receivers"]:
+            new_devices[cluster_did]["receivers"].append(rcv)
+            if rcv not in _recv_state:   # un abonnement préservé (live → orphelin) n'est PAS réinitialisé
+                _recv_state[rcv] = {
+                    "staged": _empty_staged(1), "active": _empty_staged(1),
+                    "vmid": None, "recv_idx": 0, "essence": row.get("essence"),
+                }
 
     with _lock:
         _devices.clear();   _devices.update(new_devices)
@@ -1126,6 +1200,8 @@ def is05_send_transportfile(sid):
         tx_idx = _send_state[sid].get("tx_idx")   # présent ⇒ sender d'un moteur MTL bi-rôle
         snd_essence = _send_state[sid].get("essence", "video")
         snd_aidx = _send_state[sid].get("audio_idx")   # désambiguïse les 2 flux audio d'un même slot
+    if vmid is None:   # C2b : ressource orpheline (servie par aucun conteneur live) → pas de SDP
+        return ("sender orphelin (servi par aucun conteneur)", 503)
     from app.proxmox import get_container_ip
     ip = get_container_ip(vmid)
     if not ip:
@@ -1672,6 +1748,7 @@ __manifest__ = {
         "nmos_registry_url":     {"type": "str",  "default": ""},
         "nmos_node_label":       {"type": "str",  "default": "Bobi.Studio"},
         "nmos_node_description": {"type": "str",  "default": ""},
+        "nmos_cluster_label":    {"type": "str",  "default": "Bobi.Studio 2110 I/O"},
         "nmos_mdns_enabled":     {"type": "bool", "default": False},
         "nmos_node_uuid":        {"type": "str",  "default": ""},
         "nmos_host_address":     {"type": "str",  "default": ""},
@@ -1717,6 +1794,113 @@ def register_routes(bp):
         else:
             stop()
         return jsonify(status_dict())
+
+    # ─── C2b : registre de ressources cluster (curation) ─────────────────────────
+    @bp.route("/api/nmos/registry", methods=["GET"])
+    @require_login
+    def nmos_registry_list():
+        """Toutes les ressources du registre cluster, enrichies : servie/orpheline, conteneur servant,
+        abonnée par un contrôleur. `manual` = créée à la main (sans binding)."""
+        from app.database import db_nmos_resources, db_get_containers
+        cont_by_iu = {c["instance_uuid"]: c for c in db_get_containers() if c.get("instance_uuid")}
+        out = []
+        with _lock:
+            for row in db_nmos_resources():
+                rid = row["id"]
+                pool  = _senders if row["kind"] == "sender" else _receivers
+                state = _send_state if row["kind"] == "sender" else _recv_state
+                live_vmid = (state.get(rid) or {}).get("vmid")
+                served = (rid in pool) and (live_vmid is not None)
+                sub = ((pool.get(rid) or {}).get("subscription") or {})
+                cc = cont_by_iu.get(row.get("bind_instance_uuid"))
+                serving = ({"vmid": cc["vmid"], "hostname": cc.get("hostname"),
+                            "slot": row.get("bind_slot")} if (cc and served) else None)
+                out.append({
+                    "id": rid, "kind": row["kind"], "essence": row["essence"],
+                    "label": row["label"], "group_name": row.get("group_name"),
+                    "role": row.get("role"), "transport": row.get("transport") or {},
+                    "bind_instance_uuid": row.get("bind_instance_uuid"),
+                    "bind_slot": row.get("bind_slot"),
+                    "label_locked": bool(row.get("label_locked")),
+                    "manual": not row.get("bind_instance_uuid"),
+                    "active": served, "serving": serving,
+                    "subscribed": bool(sub.get("active")), "present": rid in pool,
+                })
+        return jsonify({"resources": out,
+                        "cluster_label": db_get_setting("nmos_cluster_label", "Bobi.Studio 2110 I/O")})
+
+    @bp.route("/api/nmos/registry", methods=["POST"])
+    @require_perm("settings.edit")
+    def nmos_registry_create():
+        """Création manuelle d'une ressource (réservation cluster, sans conteneur servant)."""
+        from app.database import db_nmos_resource_create
+        d = request.json or {}
+        kind    = (d.get("kind") or "").strip()
+        essence = (d.get("essence") or "").strip()
+        label   = (d.get("label") or "").strip()
+        if kind not in ("sender", "receiver"):
+            return jsonify({"ok": False, "error": "kind invalide (sender|receiver)"}), 400
+        if essence not in ("video", "audio", "data"):
+            return jsonify({"ok": False, "error": "essence invalide (video|audio|data)"}), 400
+        if not label:
+            return jsonify({"ok": False, "error": "label requis"}), 400
+        tr = {}
+        for k in ("multicast_ip", "port", "width", "height", "chroma", "bit_depth",
+                  "colorspace", "transfer", "scan", "field_order"):
+            if d.get(k) not in (None, ""):
+                tr[k] = d[k]
+        rid = db_nmos_resource_create(kind, essence, label,
+                                      (d.get("group_name") or label), (d.get("role") or essence), tr)
+        notify_state_change()
+        return jsonify({"ok": True, "id": rid})
+
+    @bp.route("/api/nmos/registry/<rid>", methods=["PATCH"])
+    @require_perm("settings.edit")
+    def nmos_registry_patch(rid):
+        """Relabel (op-owné) et/ou édition transport (ressources manuelles seulement)."""
+        from app.database import (db_nmos_resource_get, db_nmos_resource_set_label,
+                                  db_nmos_resource_set_transport)
+        row = db_nmos_resource_get(rid)
+        if not row:
+            return jsonify({"ok": False, "error": "ressource introuvable"}), 404
+        d = request.json or {}
+        if "label" in d:
+            lbl = (d.get("label") or "").strip()
+            if not lbl:
+                return jsonify({"ok": False, "error": "label vide"}), 400
+            db_nmos_resource_set_label(rid, lbl)
+        if "transport" in d and isinstance(d["transport"], dict):
+            if row.get("bind_instance_uuid"):
+                return jsonify({"ok": False,
+                                "error": "transport non éditable (ressource servie par un conteneur)"}), 409
+            db_nmos_resource_set_transport(rid, d["transport"])
+        notify_state_change()
+        return jsonify({"ok": True})
+
+    @bp.route("/api/nmos/registry/<rid>", methods=["DELETE"])
+    @require_perm("settings.edit")
+    def nmos_registry_delete(rid):
+        """Suppression — refusée (409) si la ressource est servie par un conteneur live."""
+        from app.database import db_nmos_resource_get, db_nmos_resource_delete, db_get_containers
+        row = db_nmos_resource_get(rid)
+        if not row:
+            return jsonify({"ok": False, "error": "ressource introuvable"}), 404
+        iu = row.get("bind_instance_uuid")
+        if iu and any(c.get("instance_uuid") == iu for c in db_get_containers()):
+            return jsonify({"ok": False,
+                            "error": "ressource servie par un conteneur actif — retirez le conteneur d'abord"}), 409
+        db_nmos_resource_delete(rid)
+        notify_state_change()
+        return jsonify({"ok": True})
+
+    @bp.route("/api/nmos/cluster_label", methods=["POST"])
+    @require_perm("settings.edit")
+    def nmos_cluster_label():
+        d = request.json or {}
+        lbl = (d.get("label") or "").strip() or "Bobi.Studio 2110 I/O"
+        db_set_setting("nmos_cluster_label", lbl)
+        notify_state_change()
+        return jsonify({"ok": True, "label": lbl})
 
     @bp.route("/api/nmos/sriov/status", methods=["GET"])
     @require_login
