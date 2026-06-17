@@ -2126,7 +2126,7 @@ def register_routes(bp):
     def nmos_sriov_status():
         from app import settings as _st
         from app.addressing import primary_host
-        from app.template_recreate import list_vfs
+        from app.host_ops import list_vfs
         from app.database import db_get_assigned_vfs
         pf       = _st.get("nmos_2110_pf") or ""
         enabled  = bool(_st.get("nmos_2110_enabled"))
@@ -2154,7 +2154,7 @@ def register_routes(bp):
     def nmos_sriov_init():
         from app import settings as _st
         from app.addressing import primary_host
-        from app.template_recreate import ensure_sriov_pool
+        from app.host_ops import ensure_sriov_pool
         pf = _st.get("nmos_2110_pf") or ""
         n  = int(_st.get("nmos_2110_vf_count") or 0)
         if not pf:
@@ -2167,7 +2167,7 @@ def register_routes(bp):
     def nmos_sriov_reconcile():
         from app import settings as _st
         from app.addressing import primary_host
-        from app.template_recreate import reconcile_vf_assignments
+        from app.host_ops import reconcile_vf_assignments
         pf = _st.get("nmos_2110_pf") or ""
         if not pf:
             return jsonify({"ok": False, "error": "nmos_2110_pf non renseigné"}), 400
@@ -2178,7 +2178,7 @@ def register_routes(bp):
     def nmos_sriov_fix():
         from app import settings as _st
         from app.addressing import primary_host
-        from app.template_recreate import fix_vf_assignments
+        from app.host_ops import fix_vf_assignments
         pf = _st.get("nmos_2110_pf") or ""
         if not pf:
             return jsonify({"ok": False, "error": "nmos_2110_pf non renseigné"}), 400
