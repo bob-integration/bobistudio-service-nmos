@@ -1,7 +1,10 @@
 {
-  "version": "0.1.7",
+  "version": "0.1.8",
   "published_at": "2026-06-17",
   "changes": {
+    "Nouveautés (0.1.8)": [
+      "Multicast cluster-unique (B2-3) : à la création d'une ressource sender du registre (POST /api/nmos/registry) sans adresse imposée, l'orchestrateur alloue un groupe multicast cluster-unique depuis le pool (app.allocations.allocate_multicast, réglages mcast_pool_base/size/port_default). Détection de collision : GET /api/nmos/registry expose un flag mcast_conflict par ressource (badge ⚠mcast dans l'éditeur), et rebuild_model émet une alerte (anti-spam) si deux ressources partagent un groupe. Les multicasts existants ne sont JAMAIS réécrits (behavior-preserving ; migration d'un parc = réassignation explicite). Aussi : host-ops résolus par-nœud (B1a/B1b — primary_host/refclk via la table nodes) ; module renommé host_ops (B1b)."
+    ],
     "Nouveautés (0.1.7)": [
       "Rebinding EXPLICITE (C2b+) — plusieurs conteneurs remappés sur UNE liste NMOS. Un slot 2110 d'un conteneur peut servir une ressource précise du registre (override params.nmos_bind[slot_key]=resource_id) : la RESSOURCE fait autorité (push-down) → le conteneur émet exactement son multicast/format/UUID (docker_driver.push_tx_slots substitue le transport de la ressource ; api_mtl_tx_dest/format → 409 si le slot est lié). Couvre senders ET receivers (RX : re-souscription du SDP actif de la ressource via manual_subscribe). _registry_id(bind_override) court-circuite l'auto, renvoie (id, label). Exclusivité : une ressource = un seul émetteur (binder purge tout autre nmos_bind la pointant). Routes /api/nmos/bind, /api/nmos/unbind, /api/nmos/slots. Éditeur Réglages→NMOS : sélecteur « Servie par » (slots compatibles) + délier ; page I/O Destinations : bouton 🔗 par flux + badge lié + transport read-only quand lié. Délier = retour au binding auto."
     ],
