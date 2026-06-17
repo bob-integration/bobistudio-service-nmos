@@ -70,6 +70,7 @@ _senders = {}        # sender_id → dict (NMOS resource, populé pour sender_21
 _sources = {}        # source_id → dict
 _flows = {}          # flow_id → dict
 _send_state = {}     # sender_id → {"staged": {...}, "active": {...}, "vmid": ...}
+_last_mcast_conflict_sig = ""   # B2-3 : anti-spam de l'alerte de collision multicast
 
 # ═════════════════════════════════════════════════════════════════════
 # Helpers : versionning TAI, IDs stables
@@ -891,6 +892,24 @@ def rebuild_model():
         for orphan in list(_send_state):
             if orphan not in _senders:
                 del _send_state[orphan]
+
+    # B2-3 : détection de collision multicast cluster (groupe partagé par >1 ressource du registre).
+    # Non bloquant — alerte de visibilité (anti-spam : seulement si l'ensemble des collisions change).
+    try:
+        from app.allocations import multicast_conflicts as _mcast_conflicts
+        conflicts = _mcast_conflicts()
+        if conflicts:
+            sig = ";".join(sorted(conflicts))
+            global _last_mcast_conflict_sig
+            if sig != _last_mcast_conflict_sig:
+                from app.database import db_add_alert
+                db_add_alert(f"{len(conflicts)} groupe(s) multicast en collision (registre NMOS) : "
+                             f"{', '.join(sorted(conflicts)[:5])}", "warning")
+                _last_mcast_conflict_sig = sig
+        else:
+            _last_mcast_conflict_sig = ""
+    except Exception:
+        pass
 
 def _get_recv_count_for_vmid(vmid):
     from app.database import db_get_container
@@ -1898,6 +1917,11 @@ def register_routes(bp):
             except Exception:
                 _p = {}
             explicit.update((_p.get("nmos_bind") or {}).values())
+        # B2-3 : ids en collision multicast (groupe partagé par >1 ressource) → badge éditeur.
+        from app.allocations import multicast_conflicts
+        _conflict_ids = set()
+        for _ids in multicast_conflicts().values():
+            _conflict_ids.update(_ids)
         out = []
         with _lock:
             for row in db_nmos_resources():
@@ -1920,6 +1944,7 @@ def register_routes(bp):
                     "manual": not row.get("bind_instance_uuid"),
                     "active": served, "serving": serving,
                     "explicit": rid in explicit,
+                    "mcast_conflict": rid in _conflict_ids,
                     "subscribed": bool(sub.get("active")), "present": rid in pool,
                 })
         return jsonify({"resources": out,
@@ -1945,6 +1970,14 @@ def register_routes(bp):
                   "colorspace", "transfer", "scan", "field_order"):
             if d.get(k) not in (None, ""):
                 tr[k] = d[k]
+        # B2-3 : pas de multicast fourni → allocation cluster-unique depuis le pool (sender seulement ;
+        # un receiver n'émet pas). L'opérateur peut toujours imposer un multicast (il prime).
+        if kind == "sender" and not tr.get("multicast_ip"):
+            from app.allocations import allocate_multicast
+            mip, mport = allocate_multicast(tr.get("port"))
+            if mip:
+                tr["multicast_ip"] = mip
+                tr["port"] = mport
         rid = db_nmos_resource_create(kind, essence, label,
                                       (d.get("group_name") or label), (d.get("role") or essence), tr)
         notify_state_change()
