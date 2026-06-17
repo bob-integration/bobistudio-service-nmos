@@ -299,7 +299,7 @@ def _build_data_flow_resource(fid, did, src_id, vmid, label, version):
 
 
 def _registry_id(current_seed, instance_uuid, slot_key, essence, kind,
-                 label="", transport=None, group_name="", role=""):
+                 label="", transport=None, group_name="", role="", bind_override=None):
     """C2a : id NMOS STABLE depuis le registre cluster (table nmos_resources), découplé du vmid.
     Lookup par (instance_uuid, slot_key, essence, kind) :
       - 1re fois (registre vide pour ce slot) → id = formule ACTUELLE (`_stable_uuid(current_seed)`,
@@ -311,7 +311,17 @@ def _registry_id(current_seed, instance_uuid, slot_key, essence, kind,
     celui du registre → le caller construit la ressource avec, pas avec le hostname du conteneur."""
     if not instance_uuid:
         return _stable_uuid(current_seed), label
-    from app.database import db_nmos_resource_get_by_bind, db_nmos_resource_upsert
+    from app.database import (db_nmos_resource_get_by_bind, db_nmos_resource_upsert,
+                              db_nmos_resource_get, db_nmos_resource_rebind)
+    # C2b+ : rebinding EXPLICITE — ce slot sert une ressource précise du registre (override op). La
+    # ressource fait AUTORITÉ : on ne touche pas son transport, on ré-écrit juste son binding sur ce
+    # conteneur/slot (résolution « servi par ») et on renvoie SON libellé + son UUID. Override périmé
+    # (ressource supprimée) → on retombe sur l'auto.
+    if bind_override:
+        ov = db_nmos_resource_get(bind_override)
+        if ov and ov.get("kind") == kind and ov.get("essence") == essence:
+            db_nmos_resource_rebind(bind_override, instance_uuid, slot_key)
+            return bind_override, ov.get("label") or label
     ex = db_nmos_resource_get_by_bind(instance_uuid, slot_key, essence, kind)
     rid = ex["id"] if ex else _stable_uuid(current_seed)
     # C2b : si le libellé a été figé par l'op (label_locked), on le PRÉSERVE (ne pas réécrire avec le
@@ -500,6 +510,8 @@ def rebuild_model():
         is_receiver = _role in ("receiver", "both")
         is_sender   = _role in ("sender", "both")
         dc_params = (dc.get("params") or {}) if dc else {}
+        # C2b+ : overrides de rebinding explicite {slot_key: resource_id} (vide = tout en auto).
+        nmos_bind = dc_params.get("nmos_bind") or {}
         # Counts par essence — lus depuis deploy_config.params (source de vérité unique).
         # active_rx_count / active_tx_count limitent combien de slots apparaissent dans NMOS
         # (les queues MTL sous-jacentes sont toutes allouées ; c'est une fenêtre de visibilité).
@@ -539,7 +551,8 @@ def rebuild_model():
         for idx in range(n_video):
             label = f"{c.get('hostname') or vmid} #r{idx} (video)"
             rid, label = _registry_id(f"receiver:v:{vmid}:{idx}", instance_uuid, f"v:{idx}", "video",
-                                      "receiver", label, {}, _grp_name(idx), "video")
+                                      "receiver", label, {}, _grp_name(idx), "video",
+                                      bind_override=nmos_bind.get(f"v:{idx}"))
             new_receivers[rid] = _build_receiver_resource(rid, did, vmid, idx, label, version, fmt="video")
             _set_grouphint(new_receivers[rid], _grp_name(idx), "video")
             new_devices[did]["receivers"].append(rid)
@@ -558,7 +571,8 @@ def rebuild_model():
             n = _audio_role_ctr.get(grp, 0) + 1
             _audio_role_ctr[grp] = n
             rid, label = _registry_id(f"receiver:a:{vmid}:{idx}", instance_uuid, f"a:{idx}", "audio",
-                                      "receiver", label, {}, grp, f"audio {n}")
+                                      "receiver", label, {}, grp, f"audio {n}",
+                                      bind_override=nmos_bind.get(f"a:{idx}"))
             new_receivers[rid] = _build_receiver_resource(rid, did, vmid, idx, label, version, fmt="audio")
             _set_grouphint(new_receivers[rid], grp, f"audio {n}")
             new_devices[did]["receivers"].append(rid)
@@ -577,7 +591,8 @@ def rebuild_model():
             n = _data_role_ctr.get(grp, 0) + 1
             _data_role_ctr[grp] = n
             rid, label = _registry_id(f"receiver:d:{vmid}:{idx}", instance_uuid, f"d:{idx}", "data",
-                                      "receiver", label, {}, grp, f"anc {n}")
+                                      "receiver", label, {}, grp, f"anc {n}",
+                                      bind_override=nmos_bind.get(f"d:{idx}"))
             new_receivers[rid] = _build_receiver_resource(rid, did, vmid, idx, label, version, fmt="data")
             _set_grouphint(new_receivers[rid], grp, f"anc {n}")
             new_devices[did]["receivers"].append(rid)
@@ -610,9 +625,10 @@ def rebuild_model():
             _fo   = str(_pp.get("field_order") or v.get("field_order") or "")
             _tr = {"multicast_ip": mcast, "port": port, "width": width, "height": height,
                    "chroma": chroma, "bit_depth": bit_depth, "colorspace": cs, "transfer": transfer,
-                   "scan": _scan, "field_order": _fo}
+                   "scan": _scan, "field_order": _fo, "fps": v.get("fps")}
             snd_id, label = _registry_id(f"sender:v:{vmid}", instance_uuid, "v", "video",
-                                         "sender", label, _tr, base, "video")
+                                         "sender", label, _tr, base, "video",
+                                         bind_override=nmos_bind.get("v"))
             src_id = _stable_uuid(f"source:{snd_id}")
             fid    = _stable_uuid(f"flow:{snd_id}")
             new_sources[src_id] = _build_source_resource(src_id, did, vmid, label, version)
@@ -673,9 +689,10 @@ def rebuild_model():
             label  = f"{c.get('hostname') or vmid} TX{tx_idx} 2110-20"
             _tr = {"multicast_ip": mcast, "port": port, "width": width, "height": height,
                    "chroma": chroma, "bit_depth": bit_depth, "colorspace": cs, "transfer": transfer,
-                   "scan": _scan, "field_order": _fo}
+                   "scan": _scan, "field_order": _fo, "fps": tslot.get("fps")}
             snd_id, label = _registry_id(f"sender:v:{vmid}:tx{tx_idx}", instance_uuid, f"tx{tx_idx}:v",
-                                         "video", "sender", label, _tr, f"{base} TX {tx_idx + 1}", "video")
+                                         "video", "sender", label, _tr, f"{base} TX {tx_idx + 1}", "video",
+                                         bind_override=nmos_bind.get(f"tx{tx_idx}:v"))
             src_id = _stable_uuid(f"source:{snd_id}")
             fid    = _stable_uuid(f"flow:{snd_id}")
             new_sources[src_id] = _build_source_resource(src_id, did, vmid, label, version)
@@ -713,7 +730,8 @@ def rebuild_model():
             port  = int(a.get("dest_port") or (5004 + 2 * a_idx))
             label  = f"{c.get('hostname') or vmid} 2110-30 #{a_idx}"
             snd_id, label = _registry_id(f"sender:a:{vmid}:{a_idx}", instance_uuid, f"a:{a_idx}", "audio",
-                                         "sender", label, {"multicast_ip": mcast, "port": port}, base, f"audio {a_idx + 1}")
+                                         "sender", label, {"multicast_ip": mcast, "port": port}, base, f"audio {a_idx + 1}",
+                                         bind_override=nmos_bind.get(f"a:{a_idx}"))
             src_id = _stable_uuid(f"source:{snd_id}")
             fid    = _stable_uuid(f"flow:{snd_id}")
             new_sources[src_id] = _build_audio_source_resource(src_id, did, vmid, label, version)
@@ -748,7 +766,8 @@ def rebuild_model():
                 snd_id, label = _registry_id(f"sender:a:{vmid}:tx{tx_idx}:{ai}", instance_uuid,
                                              f"tx{tx_idx}:a{ai}", "audio", "sender", label,
                                              {"multicast_ip": mcast, "port": port},
-                                             f"{base} TX {tx_idx + 1}", f"audio {ai + 1}")
+                                             f"{base} TX {tx_idx + 1}", f"audio {ai + 1}",
+                                             bind_override=nmos_bind.get(f"tx{tx_idx}:a{ai}"))
                 src_id = _stable_uuid(f"source:{snd_id}")
                 fid    = _stable_uuid(f"flow:{snd_id}")
                 new_sources[src_id] = _build_audio_source_resource(src_id, did, vmid, label, version)
@@ -781,7 +800,8 @@ def rebuild_model():
             label  = f"{c.get('hostname') or vmid} TX{tx_idx} 2110-40"
             snd_id, label = _registry_id(f"sender:d:{vmid}:tx{tx_idx}", instance_uuid, f"tx{tx_idx}:d",
                                          "data", "sender", label, {"multicast_ip": mcast, "port": port},
-                                         f"{base} TX {tx_idx + 1}", "anc")
+                                         f"{base} TX {tx_idx + 1}", "anc",
+                                         bind_override=nmos_bind.get(f"tx{tx_idx}:d"))
             src_id = _stable_uuid(f"source:{snd_id}")
             fid    = _stable_uuid(f"flow:{snd_id}")
             new_sources[src_id] = _build_data_source_resource(src_id, did, vmid, label, version)
@@ -834,6 +854,22 @@ def rebuild_model():
                     "staged": _empty_staged(1), "active": _empty_staged(1),
                     "vmid": None, "recv_idx": 0, "essence": row.get("essence"),
                 }
+
+    # C2b/C2b+ : « servi par » AUTORITATIF à chaque rebuild. Servi (construit ce rebuild = dans `built`)
+    # → vmid du conteneur servant (résolu via le binding registre instance_uuid → conteneur live) ;
+    # orphelin → vmid None. Corrige le résidu d'un slot rebindé/libéré (l'ancien _send_state gardait un
+    # vmid périmé → sender_sid_for/serving le résolvaient encore). Les staged/active RX sont préservés.
+    from app.database import db_get_containers as _dbc2
+    _iu2vmid = {c["instance_uuid"]: c["vmid"] for c in _dbc2() if c.get("instance_uuid")}
+    _bind_by_id = {r["id"]: r.get("bind_instance_uuid") for r in _db_nmos_resources()}
+    for sid in new_senders:
+        sv = _iu2vmid.get(_bind_by_id.get(sid)) if sid in built else None
+        if sid in _send_state:
+            _send_state[sid]["vmid"] = sv
+    for rid in new_receivers:
+        sv = _iu2vmid.get(_bind_by_id.get(rid)) if rid in built else None
+        if rid in _recv_state:
+            _recv_state[rid]["vmid"] = sv
 
     with _lock:
         _devices.clear();   _devices.update(new_devices)
@@ -1032,6 +1068,53 @@ def sender_sid_for(vmid, tx_idx=None, essence="video", audio_idx=None):
             continue
         return sid
     return None
+
+
+def _slot_key_for_state(s, kind):
+    """Reconstruit (slot_key, essence_registre) depuis une entrée _send_state/_recv_state.
+    essence_registre : video|audio|data (l'ANC interne « anc » → « data » côté registre)."""
+    ess = s.get("essence", "video")
+    if kind == "sender":
+        tx = s.get("tx_idx")
+        if ess == "video":
+            return (f"tx{tx}:v" if tx is not None else "v"), "video"
+        if ess == "audio":
+            ai = s.get("audio_idx", 0)
+            return (f"tx{tx}:a{ai}" if tx is not None else f"a:{ai}"), "audio"
+        if ess == "anc":
+            return ((f"tx{tx}:d" if tx is not None else None), "data")
+    else:
+        idx = s.get("recv_idx", 0)
+        if ess == "video": return f"v:{idx}", "video"
+        if ess == "audio": return f"a:{idx}", "audio"
+        if ess == "anc":   return f"d:{idx}", "data"
+    return None, None
+
+
+def describe_slots():
+    """C2b+ : tous les slots 2110 bindables des conteneurs live (cible des rebinds explicites).
+    Renvoie [{vmid, hostname, slot_key, essence, kind, current_id}]. Sert le sélecteur « Servie par »
+    de l'éditeur Réglages→NMOS."""
+    from app.database import db_get_container
+    hn = {}
+    def _hn(vmid):
+        if vmid not in hn:
+            c = db_get_container(vmid) or {}
+            hn[vmid] = c.get("hostname") or str(vmid)
+        return hn[vmid]
+    out = []
+    with _lock:
+        for uid, s in list(_send_state.items()):
+            if s.get("vmid") is None: continue
+            sk, ess = _slot_key_for_state(s, "sender")
+            if sk: out.append({"vmid": s["vmid"], "hostname": _hn(s["vmid"]), "slot_key": sk,
+                               "essence": ess, "kind": "sender", "current_id": uid})
+        for uid, s in list(_recv_state.items()):
+            if s.get("vmid") is None: continue
+            sk, ess = _slot_key_for_state(s, "receiver")
+            if sk: out.append({"vmid": s["vmid"], "hostname": _hn(s["vmid"]), "slot_key": sk,
+                               "essence": ess, "kind": "receiver", "current_id": uid})
+    return out
 
 
 def active_sdp_for(vmid, recv_idx, essence="video"):
@@ -1801,8 +1884,19 @@ def register_routes(bp):
     def nmos_registry_list():
         """Toutes les ressources du registre cluster, enrichies : servie/orpheline, conteneur servant,
         abonnée par un contrôleur. `manual` = créée à la main (sans binding)."""
+        import json as _json
         from app.database import db_nmos_resources, db_get_containers
-        cont_by_iu = {c["instance_uuid"]: c for c in db_get_containers() if c.get("instance_uuid")}
+        conts = db_get_containers()
+        cont_by_iu = {c["instance_uuid"]: c for c in conts if c.get("instance_uuid")}
+        # C2b+ : ids explicitement bindés (présents dans un params.nmos_bind) → distinguer du binding
+        # auto (instance_uuid+slot) pour n'offrir « délier » que sur les rebinds explicites.
+        explicit = set()
+        for c in conts:
+            try:
+                _p = (_json.loads(c.get("deploy_config") or "{}").get("params") or {})
+            except Exception:
+                _p = {}
+            explicit.update((_p.get("nmos_bind") or {}).values())
         out = []
         with _lock:
             for row in db_nmos_resources():
@@ -1824,6 +1918,7 @@ def register_routes(bp):
                     "label_locked": bool(row.get("label_locked")),
                     "manual": not row.get("bind_instance_uuid"),
                     "active": served, "serving": serving,
+                    "explicit": rid in explicit,
                     "subscribed": bool(sub.get("active")), "present": rid in pool,
                 })
         return jsonify({"resources": out,
@@ -1901,6 +1996,129 @@ def register_routes(bp):
         db_set_setting("nmos_cluster_label", lbl)
         notify_state_change()
         return jsonify({"ok": True, "label": lbl})
+
+    # ─── C2b+ : rebinding explicite (un slot conteneur sert une ressource du registre) ───────────
+    def _slot_essence_kind(slot_key, res_kind):
+        """(slot_key, kind ressource) → (essence, kind, recv_idx|None). 'a:N' est ambigu
+        (receiver audio vs sender audio global) → désambiguïsé par le kind de la ressource ciblée."""
+        sk = slot_key
+        if sk.startswith("tx"):                      # sender moteur : tx{i}:v / tx{i}:a{ai} / tx{i}:d
+            rest = sk.split(":", 1)[1] if ":" in sk else ""
+            if rest == "v": return ("video", "sender", None)
+            if rest == "d": return ("data",  "sender", None)
+            if rest.startswith("a"): return ("audio", "sender", None)
+            return (None, None, None)
+        if res_kind == "receiver":                   # v:{idx} / a:{idx} / d:{idx}
+            for pfx, ess in (("v:", "video"), ("a:", "audio"), ("d:", "data")):
+                if sk.startswith(pfx):
+                    try: return (ess, "receiver", int(sk[len(pfx):]))
+                    except ValueError: return (None, None, None)
+            return (None, None, None)
+        if sk == "v": return ("video", "sender", None)       # sender vidéo global
+        if sk.startswith("a:"): return ("audio", "sender", None)  # sender audio global
+        return (None, None, None)
+
+    def _resync_after_bind(vmid, params, ess=None, recv_idx=None, rid=None):
+        """Resync l'émission/souscription après (dé)liaison. TX : repousse les slots. RX (rid fourni) :
+        ré-applique le SDP actif de la ressource au conteneur servant (l'agent re-souscrit)."""
+        try:
+            from app import docker_driver
+            if params.get("tx_slots"):
+                docker_driver.push_tx_slots(vmid, params)
+        except Exception as e:
+            log.warning("resync push_tx_slots %s: %s", vmid, e)
+        if rid is not None and recv_idx is not None and ess:
+            sdp = (((_recv_state.get(rid) or {}).get("active") or {}).get("transport_file") or {}).get("data")
+            if sdp:
+                try:
+                    manual_subscribe(vmid, recv_idx, {"data": "anc"}.get(ess, ess), sdp, enable=True)
+                except Exception as e:
+                    log.warning("resync re-subscribe %s/%s: %s", vmid, recv_idx, e)
+
+    @bp.route("/api/nmos/slots", methods=["GET"])
+    @require_login
+    def nmos_slots():
+        return jsonify({"slots": describe_slots()})
+
+    @bp.route("/api/nmos/bind", methods=["POST"])
+    @require_perm("settings.edit")
+    def nmos_bind_route():
+        import json as _json
+        from app.database import (db_nmos_resource_get, db_get_container, db_get_containers,
+                                  db_update_deploy_config)
+        d = request.json or {}
+        rid = (d.get("resource_id") or "").strip()
+        vmid = d.get("vmid")
+        slot_key = (d.get("slot_key") or "").strip()
+        if not rid or vmid is None or not slot_key:
+            return jsonify({"ok": False, "error": "resource_id, vmid, slot_key requis"}), 400
+        res = db_nmos_resource_get(rid)
+        if not res:
+            return jsonify({"ok": False, "error": "ressource introuvable"}), 404
+        ess, kind, recv_idx = _slot_essence_kind(slot_key, res["kind"])
+        if kind is None:
+            return jsonify({"ok": False, "error": f"slot_key invalide: {slot_key}"}), 400
+        if res["kind"] != kind or res["essence"] != ess:
+            return jsonify({"ok": False, "error": "essence/kind incompatibles (ressource vs slot)"}), 400
+        c = db_get_container(int(vmid))
+        if not c:
+            return jsonify({"ok": False, "error": "conteneur introuvable"}), 404
+        # Exclusivité : une ressource = un seul émetteur. Retirer rid de tout autre conteneur/slot.
+        for oc in db_get_containers():
+            if oc["vmid"] == int(vmid):
+                continue
+            try:
+                odc = _json.loads(oc.get("deploy_config") or "{}")
+            except Exception:
+                continue
+            op = odc.get("params") or {}
+            ob = op.get("nmos_bind") or {}
+            stale = [k for k, v in ob.items() if v == rid]
+            if stale:
+                for k in stale:
+                    ob.pop(k, None)
+                op["nmos_bind"] = ob
+                db_update_deploy_config(oc["vmid"], odc.get("type"), op)
+                _resync_after_bind(oc["vmid"], op)
+        try:
+            dc = _json.loads(c.get("deploy_config") or "{}")
+        except Exception:
+            dc = {}
+        params = dc.get("params") or {}
+        nb = params.get("nmos_bind") or {}
+        nb[slot_key] = rid
+        params["nmos_bind"] = nb
+        db_update_deploy_config(int(vmid), dc.get("type"), params)
+        notify_state_change()   # rebuild → le slot sert l'UUID/transport de la ressource
+        _resync_after_bind(int(vmid), params, ess=ess, recv_idx=recv_idx, rid=rid)
+        return jsonify({"ok": True})
+
+    @bp.route("/api/nmos/unbind", methods=["POST"])
+    @require_perm("settings.edit")
+    def nmos_unbind_route():
+        import json as _json
+        from app.database import db_get_container, db_update_deploy_config
+        d = request.json or {}
+        vmid = d.get("vmid")
+        slot_key = (d.get("slot_key") or "").strip()
+        if vmid is None or not slot_key:
+            return jsonify({"ok": False, "error": "vmid, slot_key requis"}), 400
+        c = db_get_container(int(vmid))
+        if not c:
+            return jsonify({"ok": False, "error": "conteneur introuvable"}), 404
+        try:
+            dc = _json.loads(c.get("deploy_config") or "{}")
+        except Exception:
+            dc = {}
+        params = dc.get("params") or {}
+        nb = params.get("nmos_bind") or {}
+        if slot_key in nb:
+            nb.pop(slot_key, None)
+            params["nmos_bind"] = nb
+            db_update_deploy_config(int(vmid), dc.get("type"), params)
+            notify_state_change()
+            _resync_after_bind(int(vmid), params)
+        return jsonify({"ok": True})
 
     @bp.route("/api/nmos/sriov/status", methods=["GET"])
     @require_login

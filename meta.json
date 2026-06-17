@@ -1,7 +1,10 @@
 {
-  "version": "0.1.6",
+  "version": "0.1.7",
   "published_at": "2026-06-17",
   "changes": {
+    "Nouveautés (0.1.7)": [
+      "Rebinding EXPLICITE (C2b+) — plusieurs conteneurs remappés sur UNE liste NMOS. Un slot 2110 d'un conteneur peut servir une ressource précise du registre (override params.nmos_bind[slot_key]=resource_id) : la RESSOURCE fait autorité (push-down) → le conteneur émet exactement son multicast/format/UUID (docker_driver.push_tx_slots substitue le transport de la ressource ; api_mtl_tx_dest/format → 409 si le slot est lié). Couvre senders ET receivers (RX : re-souscription du SDP actif de la ressource via manual_subscribe). _registry_id(bind_override) court-circuite l'auto, renvoie (id, label). Exclusivité : une ressource = un seul émetteur (binder purge tout autre nmos_bind la pointant). Routes /api/nmos/bind, /api/nmos/unbind, /api/nmos/slots. Éditeur Réglages→NMOS : sélecteur « Servie par » (slots compatibles) + délier ; page I/O Destinations : bouton 🔗 par flux + badge lié + transport read-only quand lié. Délier = retour au binding auto."
+    ],
     "Nouveautés (0.1.6)": [
       "Registre cluster CURABLE (C2b). rebuild_model ajoute une passe REGISTRE : une ressource dont aucun conteneur live ne la sert reste exposée sous le Device cluster, INACTIVE (orpheline), transport figé depuis le registre → le routage et les abonnements RX d'un contrôleur survivent à la disparition / au non-rappel du conteneur. Éditeur Réglages→NMOS : label du Device cluster (réglage nmos_cluster_label), tableau des ressources (essence, UUID, conteneur servant, actif/orphelin, abonné, transport), relabel persistant (label_locked — n'est plus écrasé par le hostname), suppression d'une orpheline (refus 409 si servie par un conteneur live), création manuelle d'une ressource (réservation à l'avance, sans conteneur). Routes /api/nmos/registry (GET/POST/PATCH/DELETE) + /api/nmos/cluster_label. is05_send_transportfile renvoie 503 pour un sender orphelin (vmid None). Transport vidéo persisté enrichi (colorimetry/scan/field_order) pour un SDP orphelin fidèle."
     ],
