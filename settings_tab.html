@@ -20,6 +20,17 @@
                 <input type="text" id="s_nmos_node_description" class="wide"></div>
             <button class="btn btn-green" onclick="appliquerNmos()">Appliquer</button>
         </div>
+        <div class="row" style="align-items:flex-end">
+            <div class="field"><label>Mode de gestion des ressources</label>
+                <select id="s_nmos_mode" style="min-width:280px">
+                    <option value="auto">Automatique — chaque conteneur auto-crée ses Rx/Tx</option>
+                    <option value="static">Statique — pool fixe, on câble les conteneurs</option>
+                </select></div>
+            <button class="btn btn-green" onclick="appliquerNmos()">Appliquer le mode</button>
+            <div class="meta" style="flex:1; min-width:260px">En <b>statique</b>, un conteneur 2110 n'expose
+                aucune ressource NMOS tant que ses slots ne sont pas câblés à des Rx/Tx fixes du pool
+                (ci-dessous) — identité NMOS stable au rappel de projet et en multi-nœud.</div>
+        </div>
         <div class="meta" style="margin-top:var(--space-2)">
             Endpoints exposés sous <code>/x-nmos/node/v1.3/</code> et <code>/x-nmos/connection/v1.1/</code>.
             Le Node + ses Devices et Receivers sont enregistrés auprès du RDS configuré, avec heartbeat 5s.
@@ -57,18 +68,44 @@
             <button class="btn btn-green" onclick="nmosApplyClusterLabel()" style="align-self:flex-end">Appliquer le label</button>
         </div>
         <div id="nmos_registry_msg" class="meta" style="margin:var(--space-2) 0"></div>
-        <div style="overflow-x:auto">
-        <table id="nmos_registry_table" style="width:100%; border-collapse:collapse; font-size:0.85em">
-            <thead><tr style="text-align:left; border-bottom:1px solid var(--border)">
-                <th style="padding:var(--space-1)">Essence</th>
-                <th style="padding:var(--space-1)">Libellé</th>
-                <th style="padding:var(--space-1)">UUID</th>
-                <th style="padding:var(--space-1)">Servi par</th>
-                <th style="padding:var(--space-1)">État</th>
-                <th style="padding:var(--space-1)">Transport</th>
-                <th style="padding:var(--space-1)"></th>
+        <!-- Barre filtres + recherche -->
+        <div class="filter-bar" style="margin-bottom:var(--space-2)">
+            <span class="meta" id="nmos_reg_count">—</span>
+            <span class="filter-sep"></span>
+            <input type="search" class="filter-search" id="nmos_reg_search" placeholder="Rechercher (libellé, UUID, mcast)…" oninput="nmosSetSearch(this.value)">
+            <span class="filter-sep"></span>
+            <span class="filter-label">Type</span>
+            <button class="filter-chip active" data-grp="kind" data-val="all" onclick="nmosSetFilter('kind','all')">Tous</button>
+            <button class="filter-chip" data-grp="kind" data-val="receiver" onclick="nmosSetFilter('kind','receiver')">Rx</button>
+            <button class="filter-chip" data-grp="kind" data-val="sender" onclick="nmosSetFilter('kind','sender')">Tx</button>
+            <span class="filter-sep"></span>
+            <span class="filter-label">Essence</span>
+            <button class="filter-chip active" data-grp="essence" data-val="all" onclick="nmosSetFilter('essence','all')">Toutes</button>
+            <button class="filter-chip" data-grp="essence" data-val="video" onclick="nmosSetFilter('essence','video')">Vidéo</button>
+            <button class="filter-chip" data-grp="essence" data-val="audio" onclick="nmosSetFilter('essence','audio')">Audio</button>
+            <button class="filter-chip" data-grp="essence" data-val="data" onclick="nmosSetFilter('essence','data')">ANC</button>
+            <span class="filter-sep"></span>
+            <span class="filter-label">État</span>
+            <button class="filter-chip active" data-grp="etat" data-val="all" onclick="nmosSetFilter('etat','all')">Tous</button>
+            <button class="filter-chip" data-grp="etat" data-val="served" onclick="nmosSetFilter('etat','served')">Servi</button>
+            <button class="filter-chip" data-grp="etat" data-val="orphan" onclick="nmosSetFilter('etat','orphan')">Orphelin</button>
+            <button class="filter-chip" data-grp="etat" data-val="subscribed" onclick="nmosSetFilter('etat','subscribed')">Abonné</button>
+            <button class="filter-chip" data-grp="etat" data-val="pool" onclick="nmosSetFilter('etat','pool')">Pool fixe</button>
+        </div>
+        <div class="table-wrap">
+        <table id="nmos_registry_table">
+            <thead><tr>
+                <th class="th-sort" onclick="triNmos('kind')" role="button" tabindex="0">Type <span class="ind" id="nmos-ind-kind"></span></th>
+                <th class="th-sort" onclick="triNmos('essence')" role="button" tabindex="0">Essence <span class="ind" id="nmos-ind-essence"></span></th>
+                <th class="th-sort" onclick="triNmos('label')" role="button" tabindex="0">Libellé <span class="ind" id="nmos-ind-label"></span></th>
+                <th>UUID</th>
+                <th class="th-sort" onclick="triNmos('serving')" role="button" tabindex="0">Servi par <span class="ind" id="nmos-ind-serving"></span></th>
+                <th class="th-sort" onclick="triNmos('etat')" role="button" tabindex="0">État <span class="ind" id="nmos-ind-etat"></span></th>
+                <th class="th-sort" onclick="triNmos('mcast')" role="button" tabindex="0">Transport <span class="ind" id="nmos-ind-mcast"></span></th>
+                <th>SDP</th>
+                <th></th>
             </tr></thead>
-            <tbody id="nmos_registry_tbody"><tr><td colspan="7" class="meta" style="padding:var(--space-2)">—</td></tr></tbody>
+            <tbody id="nmos_registry_tbody"><tr><td colspan="9" class="meta">—</td></tr></tbody>
         </table>
         </div>
 
@@ -88,5 +125,94 @@
                 <button class="btn btn-green" onclick="nmosRegistryCreate()">Créer</button>
             </div>
         </details>
+
+        <!-- Sauvegarde / rappel / export-import de la config NMOS (UUID préservés) -->
+        <div class="row" style="flex-wrap:wrap; gap:var(--space-2); align-items:center; margin-top:var(--space-3); padding-top:var(--space-2); border-top:1px solid var(--border-soft)">
+            <label style="font-weight:600">Sauvegarde / rappel</label>
+            <button class="btn btn-sm" onclick="nmosConfigExport()" title="Télécharge le pool + les bindings + le mode en JSON (UUID inclus)">Exporter</button>
+            <button class="btn btn-sm" onclick="document.getElementById('nmos_import_file').click()" title="Réimporte un fichier exporté en conservant les UUID (ne casse pas le routage NMOS)">Importer…</button>
+            <input type="file" id="nmos_import_file" accept=".json,application/json" style="display:none" onchange="nmosConfigImport(this)">
+            <label class="toggle-inline" title="Supprime d'abord les ressources pool absentes du fichier/snapshot"><input type="checkbox" class="ios-toggle" id="nmos_import_replace"> Remplacer</label>
+            <label class="toggle-inline" title="Restaure aussi les câblages des conteneurs"><input type="checkbox" class="ios-toggle" id="nmos_import_bindings" checked> Restaurer les câblages</label>
+            <span class="filter-sep"></span>
+            <button class="btn btn-red btn-sm" onclick="nmosDeleteAll()" title="Vide tout le registre NMOS (pool compris) + les câblages. Les UUID sont perdus.">Tout supprimer</button>
+        </div>
+        <!-- Snapshots nommés rappelables d'un clic -->
+        <div class="row" style="flex-wrap:wrap; gap:var(--space-2); align-items:center; margin-top:var(--space-2)">
+            <input type="text" id="nmos_snap_name" placeholder="Nom du snapshot (ex : Plateau A)" style="min-width:220px">
+            <button class="btn btn-sm" onclick="nmosSnapSave()">Sauvegarder</button>
+            <span class="meta" id="nmos_snap_list">—</span>
+        </div>
+        <div id="nmos_config_msg" class="meta" style="margin:var(--space-2) 0"></div>
+    </div>
+
+    <h2>Pool fixe & affectation en masse</h2>
+    <div class="form">
+        <div class="meta" style="margin-bottom:var(--space-2)">
+            Crée un <b>pool</b> de Rx/Tx fixes, puis câble un conteneur 2110 <b>par canal</b>
+            (Vidéo, audio, ANC ensemble) en un clic. Idéal en mode <b>statique</b>.
+        </div>
+        <!-- Sens unique (Rx | Tx) : gouverne la création de pool ET l'affectation ci-dessous -->
+        <div class="row" style="align-items:center; gap:var(--space-2); margin-bottom:var(--space-2)">
+            <label style="font-weight:600">Sens</label>
+            <button class="filter-chip active" id="nmos_kind_receiver" onclick="nmosSetKind('receiver')">Rx (récepteurs)</button>
+            <button class="filter-chip" id="nmos_kind_sender" onclick="nmosSetKind('sender')">Tx (émetteurs)</button>
+            <span class="meta">le pool créé et l'affectation portent sur ce sens</span>
+        </div>
+        <!-- Création de pool PAR CANAL : N canaux × (Vidéo + N audio + ANC) -->
+        <div class="row" style="flex-wrap:wrap; gap:var(--space-2); align-items:flex-end">
+            <div class="field"><label>Canaux</label>
+                <input type="number" id="nmos_pool_count" value="6" min="1" max="256" style="width:80px"></div>
+            <div class="field"><label>Composition du canal</label>
+                <div class="meta" style="display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin:0">
+                    <label class="toggle-inline"><input type="checkbox" class="ios-toggle" id="nmos_pool_video" checked> Vidéo</label>
+                    <label class="toggle-inline"><input type="checkbox" class="ios-toggle" id="nmos_pool_audio" checked> Audio</label>
+                    <select id="nmos_pool_audio_count" style="width:auto; padding:2px 6px"><option value="1">×1</option><option value="2">×2</option></select>
+                    <label class="toggle-inline"><input type="checkbox" class="ios-toggle" id="nmos_pool_anc"> ANC</label>
+                </div></div>
+            <div class="field" style="flex:1; min-width:150px"><label>Préfixe (facultatif)</label>
+                <input type="text" id="nmos_pool_prefix" placeholder="ex : Projet (vide = Tx_05)"></div>
+            <button class="btn btn-green" onclick="nmosBulkCreatePool()">Créer le pool</button>
+            <button class="btn" onclick="nmosPurgeOrphans()" title="Supprime les Rx/Tx auto-créés des conteneurs disparus (garde le pool fixe, les servis et les abonnés)">Purger les orphelins</button>
+        </div>
+        <div class="meta" style="margin-top:4px">Libellés <code>&lt;Rx|Tx&gt;[_&lt;préfixe&gt;]_&lt;ID&gt;_&lt;essence&gt;</code>, ID zéro-paddé (ex. <code>Tx_Projet_05_Video</code> ; sans préfixe → <code>Tx_05_Video</code>). Audio en <code>…_Audio</code> (ou <code>…_Audio1/2</code>), ANC en <code>…_Anc</code>.</div>
+        <div id="nmos_bulk_msg" class="meta" style="margin:var(--space-2) 0"></div>
+
+        <!-- Affectation par conteneur : vue Cartes ou Graphe -->
+        <div class="row" style="align-items:center; gap:var(--space-2); margin-top:var(--space-2); flex-wrap:wrap">
+            <label style="font-weight:600">Affecter par conteneur</label>
+            <button class="filter-chip active" id="nmos_view_cards" onclick="nmosSetView('cards')">Cartes</button>
+            <button class="filter-chip" id="nmos_view_graph" onclick="nmosSetView('graph')">Graphe</button>
+            <span class="meta" id="nmos_assign_kindlabel">— sens : Rx</span>
+        </div>
+
+        <!-- Vue Cartes -->
+        <div id="nmos_bulk_cards" class="grid" style="margin-top:var(--space-2)">
+            <div class="meta">—</div>
+        </div>
+
+        <!-- Vue Graphe : slots conteneurs (gauche) ↔ pool fixe (droite), arêtes = bindings -->
+        <div id="nmos_graph" style="display:none; margin-top:var(--space-2)">
+            <div class="nmos-graph-toolbar">
+                <label class="toggle-inline" title="Étendre une sélection vidéo à l'audio + ANC du même canal (Rx)">
+                    <input type="checkbox" class="ios-toggle" id="nmos_g_bundle"> Bundle</label>
+                <select id="nmos_g_audio_count" style="width:auto; padding:2px 6px"><option value="1">×1 audio</option><option value="2">×2 audio</option></select>
+                <span class="filter-sep"></span>
+                <button class="btn btn-sm" id="nmos_g_connect" onclick="nmosGraphConnectMode()">Connecter la sélection</button>
+                <button class="btn btn-sm" onclick="nmosGraphUnbindSel()">Délier la sélection</button>
+                <span class="filter-sep"></span>
+                <span class="meta" id="nmos_g_selinfo">0 sélectionné</span>
+            </div>
+            <div class="nmos-graph-canvas" id="nmos_graph_canvas">
+                <svg class="nmos-graph-edges" id="nmos_graph_edges"></svg>
+                <div class="nmos-col" id="nmos_graph_slots"><div class="nmos-col-title">Slots conteneurs</div></div>
+                <div class="nmos-col" id="nmos_graph_pool"><div class="nmos-col-title">Pool fixe</div></div>
+            </div>
+            <div class="meta" style="margin-top:6px">
+                Glisser un slot vers une ressource pour câbler (1 par 1). Sélection multiple : clic, Ctrl-clic,
+                Maj-clic (plage), ou cadre sur le fond, puis « Connecter la sélection » et cliquer la ressource
+                de départ. « Tout assigner » câble tous les canaux d'un conteneur. Clic sur une arête = délier.
+            </div>
+        </div>
     </div>
 </div>

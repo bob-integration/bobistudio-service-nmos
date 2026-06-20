@@ -300,7 +300,8 @@ def _build_data_flow_resource(fid, did, src_id, vmid, label, version):
 
 
 def _registry_id(current_seed, instance_uuid, slot_key, essence, kind,
-                 label="", transport=None, group_name="", role="", bind_override=None):
+                 label="", transport=None, group_name="", role="", bind_override=None,
+                 allow_autoseed=True):
     """C2a : id NMOS STABLE depuis le registre cluster (table nmos_resources), découplé du vmid.
     Lookup par (instance_uuid, slot_key, essence, kind) :
       - 1re fois (registre vide pour ce slot) → id = formule ACTUELLE (`_stable_uuid(current_seed)`,
@@ -309,7 +310,10 @@ def _registry_id(current_seed, instance_uuid, slot_key, essence, kind,
     Rafraîchit aussi label/transport/binding (le slot peut changer de conteneur). Sans instance_uuid
     (ne devrait pas arriver post-C1) → fallback formule actuelle, hors registre.
     Renvoie `(id, label_effectif)` : si l'op a figé le libellé (label_locked), `label_effectif` est
-    celui du registre → le caller construit la ressource avec, pas avec le hostname du conteneur."""
+    celui du registre → le caller construit la ressource avec, pas avec le hostname du conteneur.
+    Mode STATIQUE (`allow_autoseed=False`, réglage cluster `nmos_mode=static`) : un slot SANS
+    binding explicite ni ressource déjà au registre n'émet RIEN → renvoie `(None, label)` (le caller
+    saute le slot). Les ressources déjà servies/bindées sont inchangées (pas de coupure)."""
     if not instance_uuid:
         return _stable_uuid(current_seed), label
     from app.database import (db_nmos_resource_get_by_bind, db_nmos_resource_upsert,
@@ -324,6 +328,10 @@ def _registry_id(current_seed, instance_uuid, slot_key, essence, kind,
             db_nmos_resource_rebind(bind_override, instance_uuid, slot_key)
             return bind_override, ov.get("label") or label
     ex = db_nmos_resource_get_by_bind(instance_uuid, slot_key, essence, kind)
+    # Mode statique : pas d'auto-création. Un slot non bindé et absent du registre n'émet pas de
+    # ressource (le caller fait `continue`). Une ressource déjà seedée (`ex`) reste servie.
+    if ex is None and not allow_autoseed:
+        return None, label
     rid = ex["id"] if ex else _stable_uuid(current_seed)
     # C2b : si le libellé a été figé par l'op (label_locked), on le PRÉSERVE (ne pas réécrire avec le
     # hostname du conteneur) ; sinon il suit le conteneur servant.
@@ -513,6 +521,10 @@ def rebuild_model():
         dc_params = (dc.get("params") or {}) if dc else {}
         # C2b+ : overrides de rebinding explicite {slot_key: resource_id} (vide = tout en auto).
         nmos_bind = dc_params.get("nmos_bind") or {}
+        # Mode NMOS : cluster `auto` (défaut, auto-création par slot) | `static` (pool fixe : un slot
+        # non bindé n'émet rien). Override par conteneur `nmos_no_autoseed` force le statique localement.
+        _static_mode = (_setting("nmos_mode", "auto") == "static") or bool(dc_params.get("nmos_no_autoseed"))
+        allow_autoseed = not _static_mode
         # Counts par essence — lus depuis deploy_config.params (source de vérité unique).
         # active_rx_count / active_tx_count limitent combien de slots apparaissent dans NMOS
         # (les queues MTL sous-jacentes sont toutes allouées ; c'est une fenêtre de visibilité).
@@ -553,7 +565,9 @@ def rebuild_model():
             label = f"{c.get('hostname') or vmid} #r{idx} (video)"
             rid, label = _registry_id(f"receiver:v:{vmid}:{idx}", instance_uuid, f"v:{idx}", "video",
                                       "receiver", label, {}, _grp_name(idx), "video",
-                                      bind_override=nmos_bind.get(f"v:{idx}"))
+                                      bind_override=nmos_bind.get(f"v:{idx}"), allow_autoseed=allow_autoseed)
+            if rid is None:
+                continue
             new_receivers[rid] = _build_receiver_resource(rid, did, vmid, idx, label, version, fmt="video")
             _set_grouphint(new_receivers[rid], _grp_name(idx), "video")
             new_devices[did]["receivers"].append(rid)
@@ -573,7 +587,9 @@ def rebuild_model():
             _audio_role_ctr[grp] = n
             rid, label = _registry_id(f"receiver:a:{vmid}:{idx}", instance_uuid, f"a:{idx}", "audio",
                                       "receiver", label, {}, grp, f"audio {n}",
-                                      bind_override=nmos_bind.get(f"a:{idx}"))
+                                      bind_override=nmos_bind.get(f"a:{idx}"), allow_autoseed=allow_autoseed)
+            if rid is None:
+                continue
             new_receivers[rid] = _build_receiver_resource(rid, did, vmid, idx, label, version, fmt="audio")
             _set_grouphint(new_receivers[rid], grp, f"audio {n}")
             new_devices[did]["receivers"].append(rid)
@@ -593,7 +609,9 @@ def rebuild_model():
             _data_role_ctr[grp] = n
             rid, label = _registry_id(f"receiver:d:{vmid}:{idx}", instance_uuid, f"d:{idx}", "data",
                                       "receiver", label, {}, grp, f"anc {n}",
-                                      bind_override=nmos_bind.get(f"d:{idx}"))
+                                      bind_override=nmos_bind.get(f"d:{idx}"), allow_autoseed=allow_autoseed)
+            if rid is None:
+                continue
             new_receivers[rid] = _build_receiver_resource(rid, did, vmid, idx, label, version, fmt="data")
             _set_grouphint(new_receivers[rid], grp, f"anc {n}")
             new_devices[did]["receivers"].append(rid)
@@ -629,36 +647,37 @@ def rebuild_model():
                    "scan": _scan, "field_order": _fo, "fps": v.get("fps")}
             snd_id, label = _registry_id(f"sender:v:{vmid}", instance_uuid, "v", "video",
                                          "sender", label, _tr, base, "video",
-                                         bind_override=nmos_bind.get("v"))
-            src_id = _stable_uuid(f"source:{snd_id}")
-            fid    = _stable_uuid(f"flow:{snd_id}")
-            new_sources[src_id] = _build_source_resource(src_id, did, vmid, label, version)
-            new_flows[fid]      = _build_flow_resource(fid, did, src_id, vmid, label, width, height,
-                                                       version, chroma, bit_depth, cs, transfer, _scan, _fo)
-            new_senders[snd_id] = _build_sender_resource(snd_id, did, fid, vmid, label, version)
-            _set_grouphint(new_senders[snd_id], base, "video")
-            new_devices[did]["senders"].append(snd_id)
-            smpte_2022_7_v = bool(v.get("smpte_2022_7"))
-            mcast1_v = v.get("multicast_ip_leg1")
-            port1_v  = v.get("dest_port_leg1")
-            leg1_v   = (mcast1_v, port1_v) if (smpte_2022_7_v and mcast1_v and port1_v) else None
-            if snd_id not in _send_state:
-                empty = _empty_sender_staged(mcast, port, leg1=leg1_v)
-                _send_state[snd_id] = {
-                    "staged": empty, "active": json.loads(json.dumps(empty)),
-                    "vmid": vmid, "multicast_ip": mcast, "destination_port": port,
-                    "essence": "video",
-                }
-            else:
-                _send_state[snd_id]["multicast_ip"] = mcast
-                _send_state[snd_id]["destination_port"] = port
-                # Resync transport_params if 2022-7 config changed
-                cur_legs = len(_send_state[snd_id]["staged"].get("transport_params") or [])
-                want_legs = 2 if leg1_v else 1
-                if cur_legs != want_legs:
+                                         bind_override=nmos_bind.get("v"), allow_autoseed=allow_autoseed)
+            if snd_id is not None:   # None = mode statique, slot non bindé → aucun sender émis
+                src_id = _stable_uuid(f"source:{snd_id}")
+                fid    = _stable_uuid(f"flow:{snd_id}")
+                new_sources[src_id] = _build_source_resource(src_id, did, vmid, label, version)
+                new_flows[fid]      = _build_flow_resource(fid, did, src_id, vmid, label, width, height,
+                                                           version, chroma, bit_depth, cs, transfer, _scan, _fo)
+                new_senders[snd_id] = _build_sender_resource(snd_id, did, fid, vmid, label, version)
+                _set_grouphint(new_senders[snd_id], base, "video")
+                new_devices[did]["senders"].append(snd_id)
+                smpte_2022_7_v = bool(v.get("smpte_2022_7"))
+                mcast1_v = v.get("multicast_ip_leg1")
+                port1_v  = v.get("dest_port_leg1")
+                leg1_v   = (mcast1_v, port1_v) if (smpte_2022_7_v and mcast1_v and port1_v) else None
+                if snd_id not in _send_state:
                     empty = _empty_sender_staged(mcast, port, leg1=leg1_v)
-                    _send_state[snd_id]["staged"] = empty
-                    _send_state[snd_id]["active"] = json.loads(json.dumps(empty))
+                    _send_state[snd_id] = {
+                        "staged": empty, "active": json.loads(json.dumps(empty)),
+                        "vmid": vmid, "multicast_ip": mcast, "destination_port": port,
+                        "essence": "video",
+                    }
+                else:
+                    _send_state[snd_id]["multicast_ip"] = mcast
+                    _send_state[snd_id]["destination_port"] = port
+                    # Resync transport_params if 2022-7 config changed
+                    cur_legs = len(_send_state[snd_id]["staged"].get("transport_params") or [])
+                    want_legs = 2 if leg1_v else 1
+                    if cur_legs != want_legs:
+                        empty = _empty_sender_staged(mcast, port, leg1=leg1_v)
+                        _send_state[snd_id]["staged"] = empty
+                        _send_state[snd_id]["active"] = json.loads(json.dumps(empty))
 
         # Senders vidéo MOTEUR (slots TX) — un sender NMOS par entrée tx_slots, keyé sur tx_idx.
         # (Additif : sans tx_slots, aucun sender — les receivers/senders existants sont inchangés.)
@@ -693,7 +712,9 @@ def rebuild_model():
                    "scan": _scan, "field_order": _fo, "fps": tslot.get("fps")}
             snd_id, label = _registry_id(f"sender:v:{vmid}:tx{tx_idx}", instance_uuid, f"tx{tx_idx}:v",
                                          "video", "sender", label, _tr, f"{base} TX {tx_idx + 1}", "video",
-                                         bind_override=nmos_bind.get(f"tx{tx_idx}:v"))
+                                         bind_override=nmos_bind.get(f"tx{tx_idx}:v"), allow_autoseed=allow_autoseed)
+            if snd_id is None:
+                continue
             src_id = _stable_uuid(f"source:{snd_id}")
             fid    = _stable_uuid(f"flow:{snd_id}")
             new_sources[src_id] = _build_source_resource(src_id, did, vmid, label, version)
@@ -732,7 +753,9 @@ def rebuild_model():
             label  = f"{c.get('hostname') or vmid} 2110-30 #{a_idx}"
             snd_id, label = _registry_id(f"sender:a:{vmid}:{a_idx}", instance_uuid, f"a:{a_idx}", "audio",
                                          "sender", label, {"multicast_ip": mcast, "port": port}, base, f"audio {a_idx + 1}",
-                                         bind_override=nmos_bind.get(f"a:{a_idx}"))
+                                         bind_override=nmos_bind.get(f"a:{a_idx}"), allow_autoseed=allow_autoseed)
+            if snd_id is None:
+                continue
             src_id = _stable_uuid(f"source:{snd_id}")
             fid    = _stable_uuid(f"flow:{snd_id}")
             new_sources[src_id] = _build_audio_source_resource(src_id, did, vmid, label, version)
@@ -768,7 +791,9 @@ def rebuild_model():
                                              f"tx{tx_idx}:a{ai}", "audio", "sender", label,
                                              {"multicast_ip": mcast, "port": port},
                                              f"{base} TX {tx_idx + 1}", f"audio {ai + 1}",
-                                             bind_override=nmos_bind.get(f"tx{tx_idx}:a{ai}"))
+                                             bind_override=nmos_bind.get(f"tx{tx_idx}:a{ai}"), allow_autoseed=allow_autoseed)
+                if snd_id is None:
+                    continue
                 src_id = _stable_uuid(f"source:{snd_id}")
                 fid    = _stable_uuid(f"flow:{snd_id}")
                 new_sources[src_id] = _build_audio_source_resource(src_id, did, vmid, label, version)
@@ -802,7 +827,9 @@ def rebuild_model():
             snd_id, label = _registry_id(f"sender:d:{vmid}:tx{tx_idx}", instance_uuid, f"tx{tx_idx}:d",
                                          "data", "sender", label, {"multicast_ip": mcast, "port": port},
                                          f"{base} TX {tx_idx + 1}", "anc",
-                                         bind_override=nmos_bind.get(f"tx{tx_idx}:d"))
+                                         bind_override=nmos_bind.get(f"tx{tx_idx}:d"), allow_autoseed=allow_autoseed)
+            if snd_id is None:
+                continue
             src_id = _stable_uuid(f"source:{snd_id}")
             fid    = _stable_uuid(f"flow:{snd_id}")
             new_sources[src_id] = _build_data_source_resource(src_id, did, vmid, label, version)
@@ -1133,6 +1160,127 @@ def describe_slots():
             sk, ess = _slot_key_for_state(s, "receiver")
             if sk: out.append({"vmid": s["vmid"], "hostname": _hn(s["vmid"]), "slot_key": sk,
                                "essence": ess, "kind": "receiver", "current_id": uid})
+    return out
+
+
+def _container_slot_keys(params, kind):
+    """slot_keys POTENTIELS d'un conteneur (fenêtre active_*), INDÉPENDAMMENT du binding/mode — pour
+    l'auto-map et les cartes (en mode statique describe_slots est vide tant qu'on n'a pas câblé).
+    Miroir EXACT des conditions d'émission de rebuild_model. Renvoie {video:[], audio:[], data:[]}."""
+    out = {"video": [], "audio": [], "data": []}
+    if kind == "receiver":
+        n_video_full = int(params.get("video_count", 0) or 0)
+        arc = params.get("active_rx_count")
+        n_video = min(int(arc if arc is not None else n_video_full), n_video_full)
+        aper = int(params.get("audio_per_video") or 0)
+        n_audio_full = int(params.get("audio_count", 0) or 0)
+        n_audio = (n_video * aper) if aper > 0 else min(int(params.get("active_rx_count") or n_audio_full), n_audio_full)
+        n_data = min(n_video, int(params.get("anc_count", 0) or 0))
+        out["video"] = [f"v:{i}" for i in range(max(0, n_video))]
+        out["audio"] = [f"a:{i}" for i in range(max(0, n_audio))]
+        out["data"]  = [f"d:{i}" for i in range(max(0, n_data))]
+    else:                                              # sender
+        if params.get("video"):
+            out["video"].append("v")
+        for ai in range(len(params.get("audios") or [])):
+            out["audio"].append(f"a:{ai}")
+        tx_full = params.get("tx_slots") or []
+        atc = params.get("active_tx_count")
+        n_tx = min(int(atc if atc is not None else len(tx_full)), len(tx_full))
+        for i in range(n_tx):
+            ts = tx_full[i] or {}
+            out["video"].append(f"tx{i}:v")
+            for ai, acfg in enumerate((ts.get("audios") or [])[:2]):
+                if (acfg or {}).get("multicast_ip"):
+                    out["audio"].append(f"tx{i}:a{ai}")
+            if ts.get("anc_multicast_ip"):
+                out["data"].append(f"tx{i}:d")
+    return out
+
+
+def _slot_order(slot_key):
+    """Index de tri d'un slot_key (v:3→3, tx2:v→2010, tx1:a0→1100, …)."""
+    import re as _re
+    m = _re.match(r"^tx(\d+):(.+)$", slot_key)
+    if m:
+        base, sub = int(m.group(1)), m.group(2)
+        sa = _re.match(r"a(\d+)", sub)
+        off = (100 + int(sa.group(1))) if sa else (50 if sub == "d" else 0)
+        return base * 1000 + off
+    m = _re.match(r"^[vad]:(\d+)$", slot_key)
+    return int(m.group(1)) if m else 0
+
+
+def _bundle_mappings(params, kind, pool, include):
+    """Construit les mappings d'affectation PAR CANAL (bundle) : pour chaque vidéo, on câble vidéo +
+    N audio (`audio_count`) + ANC ensemble, en consommant le pool séquentiellement par essence.
+    `include` = {video:bool, audio_count:0|1|2, anc:bool}. Renvoie (mappings, unmatched).
+    Grouping audio↔vidéo : RX = `idx % n_video` (cf. rebuild_model) → audio du groupe g = a:{g+j*n_video} ;
+    TX = par slot tx{i} (déjà bundlé)."""
+    slots = _container_slot_keys(params, kind)
+    audio_set, data_set = set(slots["audio"]), set(slots["data"])
+    video_keys = sorted(slots["video"], key=_slot_order)
+    n_video = len([k for k in slots["video"] if k.startswith("v:")]) or len(video_keys) or 1
+    inc_v = bool(include.get("video", True))
+    ac    = max(0, min(2, int(include.get("audio_count", 0) or 0)))
+    inc_d = bool(include.get("anc", False))
+    pv = list(pool.get("video") or []); pa = list(pool.get("audio") or []); pd = list(pool.get("data") or [])
+    vi = ai = di = 0
+    mappings, unmatched = [], []
+    for vk in video_keys:
+        if vk.startswith("v:"):                       # RX
+            g = _slot_order(vk)
+            a_members = [f"a:{g + j * n_video}" for j in range(ac)]
+            d_member = f"d:{g}"
+        elif vk.startswith("tx") and vk.endswith(":v"):  # TX moteur
+            i = int(vk[2:vk.index(":")])
+            a_members = [f"tx{i}:a{j}" for j in range(ac)]
+            d_member = f"tx{i}:d"
+        else:                                          # sender vidéo global ("v")
+            a_members = [f"a:{j}" for j in range(ac)]
+            d_member = None
+        if inc_v:
+            if vi < len(pv): mappings.append({"slot_key": vk, "resource_id": pv[vi]})
+            else: unmatched.append(vk)
+            vi += 1
+        for ak in a_members:
+            if ak not in audio_set:
+                continue                               # le conteneur n'a pas cet audio sur ce canal
+            if ai < len(pa): mappings.append({"slot_key": ak, "resource_id": pa[ai]})
+            else: unmatched.append(ak)
+            ai += 1
+        if inc_d and d_member and d_member in data_set:
+            if di < len(pd): mappings.append({"slot_key": d_member, "resource_id": pd[di]})
+            else: unmatched.append(d_member)
+            di += 1
+    return mappings, unmatched
+
+
+def bindable_containers(kind):
+    """Conteneurs 2110 (rôle NMOS) avec leurs slots POTENTIELS pour `kind` + binding courant.
+    Sert les cartes de l'UI d'affectation en masse. [{vmid, hostname, node_id, slots:{ess:[keys]},
+    bound:{slot_key: resource_id}}]."""
+    import json as _json
+    from app.database import db_get_containers
+    from app import plugins as _plg
+    out = []
+    for c in db_get_containers():
+        try:
+            dc = _json.loads(c.get("deploy_config") or "{}")
+        except Exception:
+            dc = {}
+        role = (_plg.REGISTRY.get(dc.get("type")) or {}).get("nmos_role")
+        if kind == "receiver" and role not in ("receiver", "both"):
+            continue
+        if kind == "sender" and role not in ("sender", "both"):
+            continue
+        params = dc.get("params") or {}
+        slots = _container_slot_keys(params, kind)
+        if not any(slots.values()):
+            continue
+        out.append({"vmid": c["vmid"], "hostname": c.get("hostname") or str(c["vmid"]),
+                    "node_id": c.get("node_id"), "slots": slots,
+                    "bound": params.get("nmos_bind") or {}})
     return out
 
 
@@ -1482,10 +1630,15 @@ def _extract_mcast_info(active, smpte_2022_7=False):
     if sdp:
         m_c = re.search(r"c=IN IP4 ([\d.]+)", sdp)
         m_m = re.search(r"m=video (\d+)", sdp)
+        # SSM (source-specific) : `a=source-filter: incl IN IP4 <mcast> <source>` → l'IGMPv3 join
+        # a besoin de l'IP source. Sans elle, source_ip reste null et le join SSM est bancal.
+        m_sf = re.search(r"a=source-filter:\s*incl\s+IN\s+IP4\s+(\S+)\s+([\d.]+)", sdp)
         if m_c and not info0["multicast_ip"]:
             info0["multicast_ip"] = m_c.group(1)
         if m_m and not info0["destination_port"]:
             info0["destination_port"] = int(m_m.group(1))
+        if m_sf and not info0["source_ip"]:
+            info0["source_ip"] = m_sf.group(2)
     if not smpte_2022_7 or len(tps) < 2:
         return info0
     tp1 = tps[1]
@@ -1837,6 +1990,151 @@ def notify_state_change():
             log.warning(f"nmos: re-register après changement état : {e}")
 
 
+def purge_orphan_resources(dry_run=True):
+    """Purge les ressources NMOS auto-seedées devenues orphelines (conteneur supprimé/recréé).
+    GARDE une ressource si : `label_locked` (pool fixe / manuelle) OU explicitement bindée (id dans
+    un params.nmos_bind live) OU servie (bind_instance_uuid d'un conteneur live) OU abonnée par un
+    contrôleur (master_enable / transport_file actif). SUPPRIME le reste (auto-seed sur instance_uuid
+    mort). `dry_run` → renvoie la liste candidate sans rien supprimer.
+    Sert à régler les receivers fantômes (le contrôleur ne voit plus les ressources d'un conteneur
+    disparu). Appelée à la suppression de conteneur (app/containers.py) et via l'endpoint UI."""
+    import json as _json
+    from app.database import (db_nmos_resources, db_get_containers, db_nmos_resource_delete)
+    conts = db_get_containers()
+    live_iu = {c.get("instance_uuid") for c in conts if c.get("instance_uuid")}
+    explicit = set()
+    for c in conts:
+        try:
+            _p = (_json.loads(c.get("deploy_config") or "{}").get("params") or {})
+        except Exception:
+            _p = {}
+        explicit.update((_p.get("nmos_bind") or {}).values())
+    candidates = []
+    for row in db_nmos_resources():
+        rid = row["id"]
+        if row.get("label_locked"):
+            continue                                   # pool fixe / manuelle → toujours gardée
+        if rid in explicit:
+            continue                                   # explicitement câblée par un conteneur live
+        if row.get("bind_instance_uuid") in live_iu:
+            continue                                   # servie par un conteneur live
+        # NB : un orphelin ABONNÉ (bind_instance_uuid d'un conteneur DISPARU) est un fantôme —
+        # le contrôleur croit le router mais aucun conteneur ne reçoit. On le purge (sinon les
+        # receivers fantômes d'un conteneur supprimé restent éternellement exposés en IS-04).
+        candidates.append({"id": rid, "kind": row.get("kind"), "essence": row.get("essence"),
+                           "label": row.get("label")})
+    if dry_run:
+        return {"dry_run": True, "candidates": candidates, "count": len(candidates)}
+    for cand in candidates:
+        db_nmos_resource_delete(cand["id"])
+    if candidates:
+        notify_state_change()
+    return {"dry_run": False, "purged": candidates, "count": len(candidates)}
+
+
+def reset_container_resources(vmid):
+    """Remet à zéro le NMOS d'UN conteneur : vide ses `nmos_bind` ET supprime ses ressources
+    AUTO-SEEDÉES (bind sur son instance_uuid, non label_locked). Sert à « dé-assigner » un conteneur
+    dont les ressources viennent de l'auto-création (mode auto historique) et non d'un câblage de pool.
+    En mode STATIQUE → ardoise propre (le conteneur n'expose plus rien tant qu'on ne câble pas un pool).
+    En mode AUTO les uuids se régénèrent au rebuild (déterministes) → n'efface durablement que les binds.
+    Le pool fixe (label_locked) n'est jamais supprimé (juste délié). Retourne {unbound, deleted}."""
+    import json as _json
+    from app.database import (db_get_container, db_update_deploy_config, db_nmos_resources,
+                              db_nmos_resource_delete)
+    c = db_get_container(int(vmid))
+    if not c:
+        return {"ok": False, "error": "conteneur introuvable"}
+    iu = c.get("instance_uuid")
+    try:
+        dc = _json.loads(c.get("deploy_config") or "{}")
+    except Exception:
+        dc = {}
+    params = dc.get("params") or {}
+    nb = params.get("nmos_bind") or {}
+    n_unbound = len(nb)
+    if nb:
+        params["nmos_bind"] = {}
+        db_update_deploy_config(int(vmid), dc.get("type"), params)
+    deleted = 0
+    if iu:
+        for row in db_nmos_resources():
+            if row.get("bind_instance_uuid") == iu and not row.get("label_locked"):
+                db_nmos_resource_delete(row["id"]); deleted += 1
+    notify_state_change()
+    return {"ok": True, "unbound": n_unbound, "deleted": deleted}
+
+
+def nmos_config_snapshot():
+    """Capture la config NMOS (pool + bindings + réglages), UUID inclus. Sert export ET snapshot nommé."""
+    import json as _json, datetime as _dt
+    from app.database import db_nmos_resources, db_get_containers, db_get_setting
+    resources = [{k: r.get(k) for k in ("id", "kind", "essence", "label", "group_name",
+                                        "role", "transport", "label_locked")}
+                 for r in db_nmos_resources()]
+    bindings = []
+    for c in db_get_containers():
+        try:
+            dc = _json.loads(c.get("deploy_config") or "{}")
+        except Exception:
+            dc = {}
+        nb = (dc.get("params") or {}).get("nmos_bind") or {}
+        if nb:
+            bindings.append({"hostname": c.get("hostname"), "instance_uuid": c.get("instance_uuid"),
+                             "type": dc.get("type"), "nmos_bind": nb})
+    return {"version": 1, "exported_at": _dt.datetime.now().isoformat(timespec="seconds"),
+            "nmos_mode": db_get_setting("nmos_mode", "auto"),
+            "cluster_label": db_get_setting("nmos_cluster_label", ""),
+            "resources": resources, "bindings": bindings}
+
+
+def nmos_config_apply(cfg, mode="merge", restore_bindings=True, apply_mode=False):
+    """Applique une config NMOS en CONSERVANT les UUID (import / rappel de snapshot). Retourne
+    (ok, payload). `replace` supprime d'abord le pool actuel absent de la config."""
+    import json as _json
+    from app.database import (db_nmos_resource_import, db_nmos_resources, db_nmos_resource_delete,
+                              db_get_containers, db_update_deploy_config, db_set_setting)
+    res_in = (cfg or {}).get("resources") or []
+    if not isinstance(res_in, list) or not res_in:
+        return False, {"error": "config invalide (aucune ressource)"}
+    import_ids = {r.get("id") for r in res_in if r.get("id")}
+    if mode == "replace":
+        for r in db_nmos_resources():
+            if r.get("label_locked") and r["id"] not in import_ids:
+                db_nmos_resource_delete(r["id"])
+    imported = 0
+    for r in res_in:
+        if not r.get("id"):
+            continue
+        db_nmos_resource_import(r["id"], r.get("kind"), r.get("essence"), r.get("label") or "",
+                                r.get("group_name") or "", r.get("role") or "",
+                                r.get("transport") or {}, r.get("label_locked"))
+        imported += 1
+    bound = 0
+    if restore_bindings:
+        conts = db_get_containers()
+        by_iu = {c.get("instance_uuid"): c for c in conts if c.get("instance_uuid")}
+        by_hn = {c.get("hostname"): c for c in conts}
+        for b in (cfg.get("bindings") or []):
+            c = by_iu.get(b.get("instance_uuid")) or by_hn.get(b.get("hostname"))
+            if not c:
+                continue
+            try:
+                dc = _json.loads(c.get("deploy_config") or "{}")
+            except Exception:
+                dc = {}
+            params = dc.get("params") or {}
+            nb = {k: v for k, v in (b.get("nmos_bind") or {}).items() if v in import_ids}
+            if nb:
+                params["nmos_bind"] = nb
+                db_update_deploy_config(c["vmid"], dc.get("type"), params)
+                bound += 1
+    if apply_mode and cfg.get("nmos_mode") in ("auto", "static"):
+        db_set_setting("nmos_mode", cfg["nmos_mode"])
+    notify_state_change()
+    return True, {"imported": imported, "containers_bound": bound}
+
+
 # ─── Core plugin manifest ─────────────────────────────────────────────
 
 __manifest__ = {
@@ -1852,6 +2150,9 @@ __manifest__ = {
         "nmos_node_label":       {"type": "str",  "default": "Bobi.Studio"},
         "nmos_node_description": {"type": "str",  "default": ""},
         "nmos_cluster_label":    {"type": "str",  "default": "Bobi.Studio 2110 I/O"},
+        # Mode de gestion des ressources NMOS : "auto" (chaque slot de conteneur auto-crée sa
+        # ressource) | "static" (pool fixe : un slot n'émet que s'il est explicitement câblé).
+        "nmos_mode":             {"type": "str",  "default": "auto"},
         "nmos_mdns_enabled":     {"type": "bool", "default": False},
         "nmos_node_uuid":        {"type": "str",  "default": ""},
         "nmos_host_address":     {"type": "str",  "default": ""},
@@ -1876,6 +2177,7 @@ def register_routes(bp):
         st["node_label_setting"]     = db_get_setting("nmos_node_label", "Bobi.Studio")
         st["node_description_setting"] = db_get_setting("nmos_node_description", "")
         st["mdns_enabled_setting"]   = bool(db_get_setting("nmos_mdns_enabled", False))
+        st["mode_setting"]           = db_get_setting("nmos_mode", "auto") or "auto"
         return jsonify(st)
 
     @bp.route("/api/nmos/apply", methods=["POST"])
@@ -1892,6 +2194,11 @@ def register_routes(bp):
         db_set_setting("nmos_node_label",       label)
         db_set_setting("nmos_node_description", desc)
         db_set_setting("nmos_mdns_enabled",     mdns)
+        # Mode de gestion des ressources (auto|static) — n'est appliqué qu'au prochain rebuild.
+        if "mode" in data:
+            mode = "static" if str(data.get("mode")).strip() == "static" else "auto"
+            db_set_setting("nmos_mode", mode)
+            notify_state_change()
         if enabled:
             start(registry)
         else:
@@ -1911,12 +2218,15 @@ def register_routes(bp):
         # C2b+ : ids explicitement bindés (présents dans un params.nmos_bind) → distinguer du binding
         # auto (instance_uuid+slot) pour n'offrir « délier » que sur les rebinds explicites.
         explicit = set()
+        bound_by_rid = {}            # rid → (vmid, hostname, slot_key) depuis nmos_bind (vérité DB)
         for c in conts:
             try:
                 _p = (_json.loads(c.get("deploy_config") or "{}").get("params") or {})
             except Exception:
                 _p = {}
-            explicit.update((_p.get("nmos_bind") or {}).values())
+            for _sk, _rid in (_p.get("nmos_bind") or {}).items():
+                explicit.add(_rid)
+                bound_by_rid.setdefault(_rid, (c["vmid"], c.get("hostname"), _sk))
         # B2-3 : ids en collision multicast (groupe partagé par >1 ressource) → badge éditeur.
         from app.allocations import multicast_conflicts
         _conflict_ids = set()
@@ -1927,13 +2237,17 @@ def register_routes(bp):
             for row in db_nmos_resources():
                 rid = row["id"]
                 pool  = _senders if row["kind"] == "sender" else _receivers
-                state = _send_state if row["kind"] == "sender" else _recv_state
-                live_vmid = (state.get(rid) or {}).get("vmid")
-                served = (rid in pool) and (live_vmid is not None)
                 sub = ((pool.get(rid) or {}).get("subscription") or {})
-                cc = cont_by_iu.get(row.get("bind_instance_uuid"))
-                serving = ({"vmid": cc["vmid"], "hostname": cc.get("hostname"),
-                            "slot": row.get("bind_slot")} if (cc and served) else None)
+                # « Servi par » = vérité DB (indépendant du rebuild live) : priorité au binding explicite
+                # (nmos_bind), sinon au bind_instance_uuid (auto-seed) résolvant un conteneur live.
+                sv = bound_by_rid.get(rid)
+                if sv:
+                    serving = {"vmid": sv[0], "hostname": sv[1], "slot": sv[2]}
+                else:
+                    cc = cont_by_iu.get(row.get("bind_instance_uuid"))
+                    serving = ({"vmid": cc["vmid"], "hostname": cc.get("hostname"),
+                                "slot": row.get("bind_slot")} if cc else None)
+                served = serving is not None
                 out.append({
                     "id": rid, "kind": row["kind"], "essence": row["essence"],
                     "label": row["label"], "group_name": row.get("group_name"),
@@ -1983,6 +2297,101 @@ def register_routes(bp):
         notify_state_change()
         return jsonify({"ok": True, "id": rid})
 
+    @bp.route("/api/nmos/registry/bulk", methods=["POST"])
+    @require_perm("settings.edit")
+    def nmos_registry_create_bulk():
+        """Création EN MASSE d'un pool fixe : N ressources d'un même kind/essence, labellisées
+        `{label_prefix} {n}`. Multicast cluster-unique alloué par ressource (senders). 1 rebuild.
+        Body: {kind, essence, count, label_prefix, group_prefix?, base_index?}."""
+        from app.database import db_nmos_resource_create
+        d = request.json or {}
+        kind    = (d.get("kind") or "").strip()
+        essence = (d.get("essence") or "").strip()
+        prefix  = (d.get("label_prefix") or "").strip()
+        try:
+            count = int(d.get("count") or 0)
+        except (TypeError, ValueError):
+            count = 0
+        base_index = int(d.get("base_index") or 0)
+        grp_prefix = (d.get("group_prefix") or prefix).strip()
+        if kind not in ("sender", "receiver"):
+            return jsonify({"ok": False, "error": "kind invalide (sender|receiver)"}), 400
+        if essence not in ("video", "audio", "data"):
+            return jsonify({"ok": False, "error": "essence invalide (video|audio|data)"}), 400
+        if not prefix:
+            return jsonify({"ok": False, "error": "label_prefix requis"}), 400
+        if not (1 <= count <= 256):
+            return jsonify({"ok": False, "error": "count hors plage (1..256)"}), 400
+        from app.allocations import allocate_multicast
+        ids = []
+        for i in range(count):
+            n = base_index + i + 1
+            tr = {}
+            if kind == "sender":                  # multicast cluster-unique par sender
+                mip, mport = allocate_multicast(None)
+                if mip:
+                    tr["multicast_ip"] = mip
+                    tr["port"] = mport
+            rid = db_nmos_resource_create(kind, essence, f"{prefix} {n}",
+                                          grp_prefix or prefix, essence, tr)
+            ids.append(rid)
+        notify_state_change()
+        return jsonify({"ok": True, "ids": ids, "count": len(ids)})
+
+    @bp.route("/api/nmos/registry/bulk_channels", methods=["POST"])
+    @require_perm("settings.edit")
+    def nmos_registry_create_channels():
+        """Création EN MASSE PAR CANAL pour UN kind (Rx OU Tx). N canaux, chacun = (Vidéo) + N audio +
+        (ANC). Libellés `{Rx|Tx}_{prefix}_{ID}_{Video|Audio|Anc}` avec ID zéro-paddé (ex. 23 canaux →
+        `Tx_Toto_05_Video`) pour un tri alphabétique correct ; audio `…_Audio` (×1) ou `…_Audio1/2`
+        (×2), ANC `…_Anc` ; group_name = base du canal → bundle NMOS naturel.
+        Body: {kind, count, label_prefix, video:bool, audio_count:0|1|2, anc:bool, base_index?}."""
+        from app.database import db_nmos_resource_create
+        from app.allocations import allocate_multicast
+        d = request.json or {}
+        kind   = (d.get("kind") or "").strip()
+        prefix = (d.get("label_prefix") or "").strip()
+        inc_v  = bool(d.get("video"))
+        ac     = max(0, min(2, int(d.get("audio_count") or 0)))
+        inc_d  = bool(d.get("anc"))
+        base_index = int(d.get("base_index") or 0)
+        try:
+            count = int(d.get("count") or 0)
+        except (TypeError, ValueError):
+            count = 0
+        if kind not in ("sender", "receiver"):
+            return jsonify({"ok": False, "error": "kind invalide (sender|receiver)"}), 400
+        if not (1 <= count <= 256):
+            return jsonify({"ok": False, "error": "count hors plage (1..256)"}), 400
+        if not (inc_v or ac or inc_d):
+            return jsonify({"ok": False, "error": "cocher au moins une essence"}), 400
+        klabel = "Tx" if kind == "sender" else "Rx"
+        # Largeur de l'ID zéro-paddé = nb de chiffres du plus grand ID (min 2) → tri alpha correct.
+        width = max(2, len(str(base_index + count)))
+
+        def _mk(essence, label, group):
+            tr = {}
+            if kind == "sender":               # multicast cluster-unique par sender
+                mip, mport = allocate_multicast(None)
+                if mip:
+                    tr["multicast_ip"] = mip; tr["port"] = mport
+            return db_nmos_resource_create(kind, essence, label, group, essence, tr)
+
+        ids, per = [], {"video": 0, "audio": 0, "data": 0}
+        for i in range(count):
+            cid = f"{base_index + i + 1:0{width}d}"
+            # Préfixe facultatif : un seul « _ » s'il est absent (Tx_05 au lieu de Tx__05).
+            base = "_".join(p for p in (klabel, prefix, cid) if p)
+            if inc_v:
+                ids.append(_mk("video", f"{base}_Video", base)); per["video"] += 1
+            for j in range(ac):
+                lbl = f"{base}_Audio{j+1}" if ac > 1 else f"{base}_Audio"
+                ids.append(_mk("audio", lbl, base)); per["audio"] += 1
+            if inc_d:
+                ids.append(_mk("data", f"{base}_Anc", base)); per["data"] += 1
+        notify_state_change()
+        return jsonify({"ok": True, "ids": ids, "count": len(ids), "per_essence": per, "channels": count})
+
     @bp.route("/api/nmos/registry/<rid>", methods=["PATCH"])
     @require_perm("settings.edit")
     def nmos_registry_patch(rid):
@@ -2022,6 +2431,97 @@ def register_routes(bp):
         notify_state_change()
         return jsonify({"ok": True})
 
+    @bp.route("/api/nmos/registry/purge_orphans", methods=["POST"])
+    @require_perm("settings.edit")
+    def nmos_registry_purge_orphans():
+        """Purge (ou aperçu si ?dry_run=1) les ressources auto-seedées orphelines. Garde le pool
+        fixe (label_locked), les servies, les bindées et les abonnées."""
+        dry = request.args.get("dry_run") in ("1", "true", "yes")
+        return jsonify({"ok": True, **purge_orphan_resources(dry_run=dry)})
+
+    @bp.route("/api/nmos/registry/delete_all", methods=["POST"])
+    @require_perm("settings.edit")
+    def nmos_registry_delete_all():
+        """TOUT supprimer : vide le registre NMOS (toutes les ressources, pool compris) ET les
+        nmos_bind de tous les conteneurs. Destructif (les UUID sont perdus → le contrôleur perd son
+        routage). En mode auto, les ressources auto-seedées se régénèrent au rebuild."""
+        import json as _json
+        from app.database import (db_nmos_resources, db_nmos_resource_delete, db_get_containers,
+                                  db_update_deploy_config)
+        n = 0
+        for r in db_nmos_resources():
+            db_nmos_resource_delete(r["id"]); n += 1
+        cleared = 0
+        for c in db_get_containers():
+            try:
+                dc = _json.loads(c.get("deploy_config") or "{}")
+            except Exception:
+                continue
+            params = dc.get("params") or {}
+            if params.get("nmos_bind"):
+                params["nmos_bind"] = {}
+                db_update_deploy_config(c["vmid"], dc.get("type"), params)
+                cleared += 1
+        notify_state_change()
+        return jsonify({"ok": True, "deleted": n, "containers_cleared": cleared})
+
+    @bp.route("/api/nmos/config/export", methods=["GET"])
+    @require_login
+    def nmos_config_export():
+        """Exporte la config NMOS en JSON (UUID préservés). Téléchargement fichier."""
+        import datetime as _dt
+        resp = jsonify(nmos_config_snapshot())
+        resp.headers["Content-Disposition"] = "attachment; filename=nmos-config-%s.json" % _dt.date.today()
+        return resp
+
+    @bp.route("/api/nmos/config/import", methods=["POST"])
+    @require_perm("settings.edit")
+    def nmos_config_import():
+        """Rappel de config depuis un fichier. Body: {config:{…}, mode, restore_bindings, apply_mode}."""
+        d = request.json or {}
+        ok, payload = nmos_config_apply(d.get("config") or {}, (d.get("mode") or "merge").strip(),
+                                        bool(d.get("restore_bindings", True)), bool(d.get("apply_mode")))
+        return jsonify({"ok": ok, **payload}), (200 if ok else 400)
+
+    # ─── Snapshots nommés (sauvegardes serveur rappelables) ──────────────────────
+    @bp.route("/api/nmos/snapshots", methods=["GET"])
+    @require_login
+    def nmos_snapshots_list():
+        from app.database import db_nmos_snapshots_list
+        return jsonify({"snapshots": db_nmos_snapshots_list()})
+
+    @bp.route("/api/nmos/snapshots", methods=["POST"])
+    @require_perm("settings.edit")
+    def nmos_snapshots_save():
+        from app.database import db_nmos_snapshot_save
+        d = request.json or {}
+        name = (d.get("name") or "").strip()
+        if not name:
+            return jsonify({"ok": False, "error": "nom requis"}), 400
+        cfg = nmos_config_snapshot()
+        sid = db_nmos_snapshot_save(name, cfg)
+        n = len(cfg.get("resources") or [])
+        return jsonify({"ok": True, "id": sid, "name": name, "resources": n})
+
+    @bp.route("/api/nmos/snapshots/<int:sid>/recall", methods=["POST"])
+    @require_perm("settings.edit")
+    def nmos_snapshots_recall(sid):
+        from app.database import db_nmos_snapshot_get
+        snap = db_nmos_snapshot_get(sid)
+        if not snap:
+            return jsonify({"ok": False, "error": "snapshot introuvable"}), 404
+        d = request.json or {}
+        ok, payload = nmos_config_apply(snap.get("config") or {}, (d.get("mode") or "merge").strip(),
+                                        bool(d.get("restore_bindings", True)), bool(d.get("apply_mode")))
+        return jsonify({"ok": ok, "name": snap.get("name"), **payload}), (200 if ok else 400)
+
+    @bp.route("/api/nmos/snapshots/<int:sid>", methods=["DELETE"])
+    @require_perm("settings.edit")
+    def nmos_snapshots_delete(sid):
+        from app.database import db_nmos_snapshot_delete
+        db_nmos_snapshot_delete(sid)
+        return jsonify({"ok": True})
+
     @bp.route("/api/nmos/cluster_label", methods=["POST"])
     @require_perm("settings.edit")
     def nmos_cluster_label():
@@ -2052,54 +2552,62 @@ def register_routes(bp):
         if sk.startswith("a:"): return ("audio", "sender", None)  # sender audio global
         return (None, None, None)
 
-    def _resync_after_bind(vmid, params, ess=None, recv_idx=None, rid=None):
-        """Resync l'émission/souscription après (dé)liaison. TX : repousse les slots. RX (rid fourni) :
-        ré-applique le SDP actif de la ressource au conteneur servant (l'agent re-souscrit)."""
+    def _resync_after_bind(vmid, params, ess=None, recv_idx=None, rid=None, rx_slots=None):
+        """Resync l'émission/souscription après (dé)liaison. TX : repousse les slots (1 fois). RX :
+        ré-applique le SDP actif de chaque ressource au conteneur servant (l'agent re-souscrit).
+        `rx_slots` = liste optionnelle de (ess, recv_idx, rid) pour le bind en masse (1 push TX + N
+        re-souscriptions ciblées) ; le triplet (ess, recv_idx, rid) reste accepté pour le cas unitaire."""
         try:
             from app import docker_driver
             if params.get("tx_slots"):
                 docker_driver.push_tx_slots(vmid, params)
         except Exception as e:
             log.warning("resync push_tx_slots %s: %s", vmid, e)
+        slots = list(rx_slots or [])
         if rid is not None and recv_idx is not None and ess:
-            sdp = (((_recv_state.get(rid) or {}).get("active") or {}).get("transport_file") or {}).get("data")
+            slots.append((ess, recv_idx, rid))
+        for (e, ri, r) in slots:
+            sdp = (((_recv_state.get(r) or {}).get("active") or {}).get("transport_file") or {}).get("data")
             if sdp:
                 try:
-                    manual_subscribe(vmid, recv_idx, {"data": "anc"}.get(ess, ess), sdp, enable=True)
-                except Exception as e:
-                    log.warning("resync re-subscribe %s/%s: %s", vmid, recv_idx, e)
+                    manual_subscribe(vmid, ri, {"data": "anc"}.get(e, e), sdp, enable=True)
+                except Exception as exc:
+                    log.warning("resync re-subscribe %s/%s: %s", vmid, ri, exc)
 
     @bp.route("/api/nmos/slots", methods=["GET"])
     @require_login
     def nmos_slots():
         return jsonify({"slots": describe_slots()})
 
-    @bp.route("/api/nmos/bind", methods=["POST"])
-    @require_perm("settings.edit")
-    def nmos_bind_route():
-        import json as _json
-        from app.database import (db_nmos_resource_get, db_get_container, db_get_containers,
-                                  db_update_deploy_config)
-        d = request.json or {}
-        rid = (d.get("resource_id") or "").strip()
-        vmid = d.get("vmid")
-        slot_key = (d.get("slot_key") or "").strip()
-        if not rid or vmid is None or not slot_key:
-            return jsonify({"ok": False, "error": "resource_id, vmid, slot_key requis"}), 400
+    @bp.route("/api/nmos/bindable_containers", methods=["GET"])
+    @require_login
+    def nmos_bindable_containers():
+        """Conteneurs 2110 + slots potentiels pour l'UI d'affectation en masse. ?kind=receiver|sender."""
+        kind = request.args.get("kind") or "receiver"
+        if kind not in ("receiver", "sender"):
+            kind = "receiver"
+        return jsonify({"kind": kind, "containers": bindable_containers(kind)})
+
+    def _bind_validate(rid, slot_key):
+        """(ess, kind, recv_idx) | (None, erreur). Valide ressource + compat essence/kind."""
+        from app.database import db_nmos_resource_get
         res = db_nmos_resource_get(rid)
         if not res:
-            return jsonify({"ok": False, "error": "ressource introuvable"}), 404
+            return None, "ressource introuvable"
         ess, kind, recv_idx = _slot_essence_kind(slot_key, res["kind"])
         if kind is None:
-            return jsonify({"ok": False, "error": f"slot_key invalide: {slot_key}"}), 400
+            return None, f"slot_key invalide: {slot_key}"
         if res["kind"] != kind or res["essence"] != ess:
-            return jsonify({"ok": False, "error": "essence/kind incompatibles (ressource vs slot)"}), 400
-        c = db_get_container(int(vmid))
-        if not c:
-            return jsonify({"ok": False, "error": "conteneur introuvable"}), 404
-        # Exclusivité : une ressource = un seul émetteur. Retirer rid de tout autre conteneur/slot.
+            return None, "essence/kind incompatibles (ressource vs slot)"
+        return (ess, kind, recv_idx), None
+
+    def _strip_rid_from_others(rid, keep_vmid, touched):
+        """Exclusivité : retire `rid` du nmos_bind de tout AUTRE conteneur (écriture DB). Accumule
+        {vmid: params} dans `touched` pour un resync unique par conteneur côté appelant."""
+        import json as _json
+        from app.database import db_get_containers, db_update_deploy_config
         for oc in db_get_containers():
-            if oc["vmid"] == int(vmid):
+            if oc["vmid"] == keep_vmid:
                 continue
             try:
                 odc = _json.loads(oc.get("deploy_config") or "{}")
@@ -2113,7 +2621,28 @@ def register_routes(bp):
                     ob.pop(k, None)
                 op["nmos_bind"] = ob
                 db_update_deploy_config(oc["vmid"], odc.get("type"), op)
-                _resync_after_bind(oc["vmid"], op)
+                touched[oc["vmid"]] = op
+
+    @bp.route("/api/nmos/bind", methods=["POST"])
+    @require_perm("settings.edit")
+    def nmos_bind_route():
+        import json as _json
+        from app.database import db_get_container, db_update_deploy_config
+        d = request.json or {}
+        rid = (d.get("resource_id") or "").strip()
+        vmid = d.get("vmid")
+        slot_key = (d.get("slot_key") or "").strip()
+        if not rid or vmid is None or not slot_key:
+            return jsonify({"ok": False, "error": "resource_id, vmid, slot_key requis"}), 400
+        meta, err = _bind_validate(rid, slot_key)
+        if err:
+            return jsonify({"ok": False, "error": err}), (404 if "introuvable" in err else 400)
+        ess, kind, recv_idx = meta
+        c = db_get_container(int(vmid))
+        if not c:
+            return jsonify({"ok": False, "error": "conteneur introuvable"}), 404
+        touched = {}
+        _strip_rid_from_others(rid, int(vmid), touched)
         try:
             dc = _json.loads(c.get("deploy_config") or "{}")
         except Exception:
@@ -2125,7 +2654,106 @@ def register_routes(bp):
         db_update_deploy_config(int(vmid), dc.get("type"), params)
         notify_state_change()   # rebuild → le slot sert l'UUID/transport de la ressource
         _resync_after_bind(int(vmid), params, ess=ess, recv_idx=recv_idx, rid=rid)
+        for ovmid, op in touched.items():
+            _resync_after_bind(ovmid, op)
         return jsonify({"ok": True})
+
+    def _bind_bulk_apply(vmid, mappings, unbind_missing=False, clear_scope=None):
+        """Cœur du bind en masse : applique tous les mappings d'UN conteneur en 1 rebuild + 1 resync.
+        Renvoie (code, payload). Partagé par /bind_bulk et /automap.
+        `clear_scope` (set de slot_keys) borne `unbind_missing` : on ne retire QUE les clés de ce
+        périmètre non re-mappées → un re-map Tx n'efface pas les binds Rx (et inversement)."""
+        import json as _json
+        from app.database import db_get_container, db_update_deploy_config
+        c = db_get_container(int(vmid))
+        if not c:
+            return 404, {"ok": False, "error": "conteneur introuvable"}
+        try:
+            dc = _json.loads(c.get("deploy_config") or "{}")
+        except Exception:
+            dc = {}
+        params = dc.get("params") or {}
+        nb = params.get("nmos_bind") or {}
+        touched = {}
+        results, rx_slots, bound_keys = [], [], []
+        for m in mappings:
+            rid = (m or {}).get("resource_id")
+            slot_key = ((m or {}).get("slot_key") or "").strip()
+            if not rid or not slot_key:
+                results.append({"slot_key": slot_key, "ok": False, "error": "resource_id/slot_key manquant"})
+                continue
+            meta, err = _bind_validate(rid, slot_key)
+            if err:
+                results.append({"slot_key": slot_key, "ok": False, "error": err})
+                continue
+            ess, kind, recv_idx = meta
+            _strip_rid_from_others(rid, int(vmid), touched)
+            nb[slot_key] = rid
+            bound_keys.append(slot_key)
+            if kind == "receiver" and recv_idx is not None:
+                rx_slots.append((ess, recv_idx, rid))
+            results.append({"slot_key": slot_key, "ok": True})
+        if unbind_missing:                      # re-map propre : retirer les binds non re-spécifiés
+            scope = set(clear_scope) if clear_scope is not None else None
+            for k in [k for k in list(nb) if k not in bound_keys and (scope is None or k in scope)]:
+                nb.pop(k, None)
+        params["nmos_bind"] = nb
+        db_update_deploy_config(int(vmid), dc.get("type"), params)
+        notify_state_change()                   # 1 seul rebuild pour tout le lot
+        _resync_after_bind(int(vmid), params, rx_slots=rx_slots)
+        for ovmid, op in touched.items():
+            _resync_after_bind(ovmid, op)
+        return 200, {"ok": True, "results": results,
+                     "bound": len([r for r in results if r.get("ok")])}
+
+    @bp.route("/api/nmos/bind_bulk", methods=["POST"])
+    @require_perm("settings.edit")
+    def nmos_bind_bulk_route():
+        """Bind en masse de plusieurs slots d'UN conteneur en 1 rebuild + 1 resync.
+        Body: {vmid, mappings:[{slot_key, resource_id}], unbind_missing?}. Renvoie un statut
+        par mapping ; l'exclusivité déplace une ressource déjà servie ailleurs."""
+        d = request.json or {}
+        vmid = d.get("vmid")
+        mappings = d.get("mappings") or []
+        if vmid is None or not isinstance(mappings, list):
+            return jsonify({"ok": False, "error": "vmid et mappings requis"}), 400
+        code, payload = _bind_bulk_apply(int(vmid), mappings, bool(d.get("unbind_missing")))
+        return jsonify(payload), code
+
+    @bp.route("/api/nmos/automap", methods=["POST"])
+    @require_perm("settings.edit")
+    def nmos_automap_route():
+        """Affecte EN MASSE les flux d'un conteneur à un pool fixe, PAR CANAL (bundle). Body:
+        {vmid, kind:"receiver"|"sender", pool:{video:[rid...],audio:[...],data:[...]},
+         include:{video:bool, audio_count:0|1|2, anc:bool}, clear_first?}.
+        Pour chaque vidéo : câble vidéo + N audio + ANC ensemble (pool consommé par canal).
+        `include` absent ⇒ tout coché, audio_count=1 (≈ ancien zip par essence)."""
+        import json as _json
+        from app.database import db_get_container
+        d = request.json or {}
+        vmid = d.get("vmid")
+        kind = (d.get("kind") or "receiver").strip()
+        pool = d.get("pool") or {}
+        include = d.get("include") or {"video": True, "audio_count": 1, "anc": True}
+        if vmid is None or kind not in ("receiver", "sender"):
+            return jsonify({"ok": False, "error": "vmid et kind (receiver|sender) requis"}), 400
+        c = db_get_container(int(vmid))
+        if not c:
+            return jsonify({"ok": False, "error": "conteneur introuvable"}), 404
+        try:
+            _params = (_json.loads(c.get("deploy_config") or "{}").get("params") or {})
+        except Exception:
+            _params = {}
+        mappings, unmatched = _bundle_mappings(_params, kind, pool, include)
+        if not mappings:
+            return jsonify({"ok": False, "error": "aucun canal à mapper (conteneur déployé ? essences cochées ? pool dispo ?)"}), 400
+        # clear_first ne purge QUE les slots du sens courant (sinon un re-map Tx efface les binds Rx).
+        _scope = set()
+        for _ks in _container_slot_keys(_params, kind).values():
+            _scope.update(_ks)
+        code, payload = _bind_bulk_apply(int(vmid), mappings, bool(d.get("clear_first")), clear_scope=_scope)
+        payload["unmatched"] = unmatched
+        return jsonify(payload), code
 
     @bp.route("/api/nmos/unbind", methods=["POST"])
     @require_perm("settings.edit")
@@ -2153,6 +2781,47 @@ def register_routes(bp):
             notify_state_change()
             _resync_after_bind(int(vmid), params)
         return jsonify({"ok": True})
+
+    @bp.route("/api/nmos/unbind_bulk", methods=["POST"])
+    @require_perm("settings.edit")
+    def nmos_unbind_bulk_route():
+        """Délie EN MASSE plusieurs slots d'UN conteneur en 1 rebuild + 1 resync (symétrique de
+        bind_bulk). Body: {vmid, slot_keys:[...]}."""
+        import json as _json
+        from app.database import db_get_container, db_update_deploy_config
+        d = request.json or {}
+        vmid = d.get("vmid")
+        slot_keys = d.get("slot_keys") or []
+        if vmid is None or not isinstance(slot_keys, list):
+            return jsonify({"ok": False, "error": "vmid et slot_keys requis"}), 400
+        c = db_get_container(int(vmid))
+        if not c:
+            return jsonify({"ok": False, "error": "conteneur introuvable"}), 404
+        try:
+            dc = _json.loads(c.get("deploy_config") or "{}")
+        except Exception:
+            dc = {}
+        params = dc.get("params") or {}
+        nb = params.get("nmos_bind") or {}
+        removed = [k for k in slot_keys if nb.pop(k, None) is not None]
+        if removed:
+            params["nmos_bind"] = nb
+            db_update_deploy_config(int(vmid), dc.get("type"), params)
+            notify_state_change()
+            _resync_after_bind(int(vmid), params)
+        return jsonify({"ok": True, "removed": len(removed)})
+
+    @bp.route("/api/nmos/container_reset", methods=["POST"])
+    @require_perm("settings.edit")
+    def nmos_container_reset_route():
+        """Dé-assigne un conteneur : vide ses binds + supprime ses ressources auto-seedées (le pool
+        fixe est conservé). Body: {vmid}."""
+        d = request.json or {}
+        vmid = d.get("vmid")
+        if vmid is None:
+            return jsonify({"ok": False, "error": "vmid requis"}), 400
+        res = reset_container_resources(int(vmid))
+        return jsonify(res), (200 if res.get("ok") else 404)
 
     @bp.route("/api/nmos/sriov/status", methods=["GET"])
     @require_login
