@@ -744,6 +744,12 @@ def rebuild_model():
             else:
                 _send_state[snd_id]["multicast_ip"] = mcast
                 _send_state[snd_id]["destination_port"] = port
+                # AUTORITÉ du conteneur : rafraîchir l'identité (tx_idx/essence) même sur une entrée
+                # préexistante — sinon une entrée semée SANS tx_idx par la passe ORPHELINE (registre
+                # persisté, quand le sender était transitoirement absent) reste collée à tx_idx=None
+                # → transportfile prend la mauvaise branche → SDP vide (404). Auto-réparation.
+                _send_state[snd_id]["tx_idx"] = tx_idx
+                _send_state[snd_id]["essence"] = "video"
                 cur_legs = len(_send_state[snd_id]["staged"].get("transport_params") or [])
                 want_legs = 2 if leg1_v else 1
                 if cur_legs != want_legs:
@@ -784,9 +790,9 @@ def rebuild_model():
                 _send_state[snd_id]["destination_port"] = port
 
         # Senders audio par slot TX (moteur bi-rôle, ex. 2110_io) — distinct des senders
-        # audio globaux (sender_2110). Chaque tx_slot peut porter jusqu'à 2 flux audio 2110-30.
+        # audio globaux (sender_2110). « Option A » : N flux 2110-30 par slot (plus de cap à 2).
         for tx_idx, tslot in enumerate(tx_slots):
-            for ai, acfg in enumerate((tslot.get("audios") or [])[:2]):
+            for ai, acfg in enumerate(tslot.get("audios") or []):
                 mcast = acfg.get("multicast_ip")
                 if not mcast:
                     continue
@@ -820,6 +826,11 @@ def rebuild_model():
                 else:
                     _send_state[snd_id]["multicast_ip"] = mcast
                     _send_state[snd_id]["destination_port"] = port
+                    # Auto-réparation identité (cf. sender vidéo) : une entrée semée par la passe
+                    # orpheline sans tx_idx/audio_idx serait collée → SDP audio par-slot introuvable.
+                    _send_state[snd_id]["tx_idx"] = tx_idx
+                    _send_state[snd_id]["essence"] = "audio"
+                    _send_state[snd_id]["audio_idx"] = ai
 
         # Senders ANC MOTEUR (slots TX) — un sender data (2110-40) par slot TX porteur d'une dest ANC.
         # Le TX ANC suit la vidéo câblée (shm dérivé) → même tx_idx que le sender vidéo, essence "anc".
@@ -856,6 +867,9 @@ def rebuild_model():
             else:
                 _send_state[snd_id]["multicast_ip"] = mcast
                 _send_state[snd_id]["destination_port"] = port
+                # Auto-réparation identité (cf. sender vidéo/audio).
+                _send_state[snd_id]["tx_idx"] = tx_idx
+                _send_state[snd_id]["essence"] = "anc"
 
     # C2b : passe REGISTRE — ressources orphelines (servies par aucun conteneur live ce rebuild).
     # Restent exposées sous le Device cluster, INACTIVES, transport figé depuis le registre → le
