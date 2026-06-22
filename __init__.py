@@ -525,20 +525,17 @@ def rebuild_model():
         # non bindé n'émet rien). Override par conteneur `nmos_no_autoseed` force le statique localement.
         _static_mode = (_setting("nmos_mode", "auto") == "static") or bool(dc_params.get("nmos_no_autoseed"))
         allow_autoseed = not _static_mode
-        # Counts par essence — lus depuis deploy_config.params (source de vérité unique).
-        # active_rx_count / active_tx_count limitent combien de slots apparaissent dans NMOS
-        # (les queues MTL sous-jacentes sont toutes allouées ; c'est une fenêtre de visibilité).
-        n_video_full = int(dc_params.get("video_count", 0) or 0) if is_receiver else 0
-        _arc = dc_params.get("active_rx_count")
-        n_video = min(int(_arc if _arc is not None else n_video_full), n_video_full) if is_receiver else 0
-        aper = int(dc_params.get("audio_per_video") or 0)
-        n_audio_full = int(dc_params.get("audio_count", 0) or 0) if is_receiver else 0
-        if aper > 0 and is_receiver:
-            n_audio = n_video * aper          # audio suit la vidéo proportionnellement
-        else:
-            n_audio = min(int(dc_params.get("active_rx_count") or n_audio_full), n_audio_full) if is_receiver else 0
-        n_data_full = int(dc_params.get("anc_count", 0) or 0) if is_receiver else 0
-        n_data = min(n_video, n_data_full) if is_receiver else 0   # 1 ANC par groupe vidéo, ≤ anc_count
+        # Flux RX composables (« Option A ») : ``rx_flows`` fait foi — le groupement audio/ANC→vidéo
+        # suit ``attached_to`` (et non plus un ratio ``idx % n_video``). Repli DÉRIVÉ du legacy
+        # (compteurs + ratio, fenêtre ``active_rx_count``) si la liste est absente (container pas
+        # encore migré). Chaque flux = un receiver à SON idx → le keying NMOS reste vmid+idx (stable).
+        from app import io2110_flows as _iof
+        _rx_flows  = _iof.active_flows(dc_params, "rx") if is_receiver else []
+        _rx_videos = [f for f in _rx_flows if f["essence"] == "video"]
+        _rx_audios = [f for f in _rx_flows if f["essence"] == "audio"]
+        _rx_ancs   = [f for f in _rx_flows if f["essence"] == "anc"]
+        _rx_vid_of, _rx_sub_of = _iof.grouping_maps(_rx_flows)
+        n_video, n_audio, n_data = len(_rx_videos), len(_rx_audios), len(_rx_ancs)
         has_video_send = is_sender and bool(dc_params.get("video"))
         n_audio_send = len(dc_params.get("audios") or []) if is_sender else 0
         # Moteur bi-rôle : N senders vidéo (slots TX), limités à active_tx_count.
@@ -560,8 +557,16 @@ def rebuild_model():
         def _grp_name(group_idx):
             return f"{base} {group_idx + 1}" if n_video > 1 else base
 
-        # Receivers vidéo — un bundle (group_name) par vidéo
-        for idx in range(n_video):
+        # Groupe d'un flux audio/ANC : celui de SA vidéo attachée (câblage groupé) ; un flux
+        # INDÉPENDANT (attached_to=None → video_idx None) forme son propre bundle.
+        def _child_grp(video_idx, essence, idx):
+            if video_idx is not None:
+                return _grp_name(video_idx)
+            return f"{base} · {'audio' if essence == 'audio' else 'anc'} {idx + 1}"
+
+        # Receivers vidéo — un bundle (group_name) par flux vidéo
+        for vf in _rx_videos:
+            idx = vf["idx"]
             label = f"{c.get('hostname') or vmid} #r{idx} (video)"
             rid, label = _registry_id(f"receiver:v:{vmid}:{idx}", instance_uuid, f"v:{idx}", "video",
                                       "receiver", label, {}, _grp_name(idx), "video",
@@ -578,13 +583,13 @@ def rebuild_model():
                     "vmid": vmid, "recv_idx": idx, "essence": "video",
                 }
 
-        # Receivers audio — rattachés au bundle vidéo (audio j → vidéo j % n_video)
-        _audio_role_ctr = {}
-        for idx in range(n_audio):
+        # Receivers audio — rattachés au bundle de leur vidéo (attached_to) ou indépendants
+        for af in _rx_audios:
+            idx = af["idx"]
+            vi  = _rx_vid_of.get(("audio", idx))
+            n   = (_rx_sub_of.get(("audio", idx), 0) or 0) + 1
+            grp = _child_grp(vi, "audio", idx)
             label = f"{c.get('hostname') or vmid} #ra{idx} (audio)"
-            grp = _grp_name(idx % n_video) if n_video > 0 else base
-            n = _audio_role_ctr.get(grp, 0) + 1
-            _audio_role_ctr[grp] = n
             rid, label = _registry_id(f"receiver:a:{vmid}:{idx}", instance_uuid, f"a:{idx}", "audio",
                                       "receiver", label, {}, grp, f"audio {n}",
                                       bind_override=nmos_bind.get(f"a:{idx}"), allow_autoseed=allow_autoseed)
@@ -600,13 +605,13 @@ def rebuild_model():
                     "vmid": vmid, "recv_idx": idx, "essence": "audio",
                 }
 
-        # Receivers ANC (2110-40 / data) — rattachés au bundle vidéo (anc j → vidéo j % n_video)
-        _data_role_ctr = {}
-        for idx in range(n_data):
+        # Receivers ANC (2110-40 / data) — rattachés au bundle de leur vidéo ou indépendants
+        for df in _rx_ancs:
+            idx = df["idx"]
+            vi  = _rx_vid_of.get(("anc", idx))
+            n   = (_rx_sub_of.get(("anc", idx), 0) or 0) + 1
+            grp = _child_grp(vi, "anc", idx)
             label = f"{c.get('hostname') or vmid} #rd{idx} (anc)"
-            grp = _grp_name(idx % n_video) if n_video > 0 else base
-            n = _data_role_ctr.get(grp, 0) + 1
-            _data_role_ctr[grp] = n
             rid, label = _registry_id(f"receiver:d:{vmid}:{idx}", instance_uuid, f"d:{idx}", "data",
                                       "receiver", label, {}, grp, f"anc {n}",
                                       bind_override=nmos_bind.get(f"d:{idx}"), allow_autoseed=allow_autoseed)
@@ -1168,17 +1173,13 @@ def _container_slot_keys(params, kind):
     l'auto-map et les cartes (en mode statique describe_slots est vide tant qu'on n'a pas câblé).
     Miroir EXACT des conditions d'émission de rebuild_model. Renvoie {video:[], audio:[], data:[]}."""
     out = {"video": [], "audio": [], "data": []}
+    from app import io2110_flows as _iof
     if kind == "receiver":
-        n_video_full = int(params.get("video_count", 0) or 0)
-        arc = params.get("active_rx_count")
-        n_video = min(int(arc if arc is not None else n_video_full), n_video_full)
-        aper = int(params.get("audio_per_video") or 0)
-        n_audio_full = int(params.get("audio_count", 0) or 0)
-        n_audio = (n_video * aper) if aper > 0 else min(int(params.get("active_rx_count") or n_audio_full), n_audio_full)
-        n_data = min(n_video, int(params.get("anc_count", 0) or 0))
-        out["video"] = [f"v:{i}" for i in range(max(0, n_video))]
-        out["audio"] = [f"a:{i}" for i in range(max(0, n_audio))]
-        out["data"]  = [f"d:{i}" for i in range(max(0, n_data))]
+        # Slot_keys = idx réels des flux ACTIFS (rx_flows fait foi ; repli legacy via active_flows).
+        rxf = _iof.active_flows(params, "rx")
+        out["video"] = [f"v:{f['idx']}" for f in rxf if f["essence"] == "video"]
+        out["audio"] = [f"a:{f['idx']}" for f in rxf if f["essence"] == "audio"]
+        out["data"]  = [f"d:{f['idx']}" for f in rxf if f["essence"] == "anc"]
     else:                                              # sender
         if params.get("video"):
             out["video"].append("v")
@@ -1190,7 +1191,8 @@ def _container_slot_keys(params, kind):
         for i in range(n_tx):
             ts = tx_full[i] or {}
             out["video"].append(f"tx{i}:v")
-            for ai, acfg in enumerate((ts.get("audios") or [])[:2]):
+            # Plus de cap à 2 : autant de clés audio que de flux audio attachés au slot.
+            for ai, acfg in enumerate(ts.get("audios") or []):
                 if (acfg or {}).get("multicast_ip"):
                     out["audio"].append(f"tx{i}:a{ai}")
             if ts.get("anc_multicast_ip"):
