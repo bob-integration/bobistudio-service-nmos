@@ -1556,14 +1556,17 @@ def _activate_receiver(rid):
     # (mixer, multiview…) voient le vrai WxH/fps reçu, pas seulement l'affichage I/O. Stream
     # auto-détecte déjà depuis le shm ; ceci aligne les autres. En thread (hors _lock NMOS).
     if essence == "video" and master_enable and sdp:
-        threading.Thread(target=_propagate_sdp_format, args=(vmid, sdp), daemon=True).start()
+        threading.Thread(target=_propagate_sdp_format, args=(vmid, sdp, recv_idx), daemon=True).start()
     # Persiste l'état d'abonnement (survie au redémarrage de l'orchestrateur).
     _persist_subscriptions()
 
-def _propagate_sdp_format(vmid, sdp):
+def _propagate_sdp_format(vmid, sdp, recv_idx=None, slot_only=False):
     """Écrit width/height/fps/scan lus du SDP dans le deploy_config du receiver (si différent),
     puis notify_state_change → la topologie et les consommateurs voient le vrai format reçu.
-    Multi-slot : modèle width/height par container (le dernier flux activé fait foi)."""
+    Modèle PAR-FLUX : `params['rx_fmt'][str(recv_idx)]` porte le format RÉEL de CHAQUE entrée RX
+    (un moteur 2110_io multi-entrées peut mélanger des sources progressives ET entrelacées → le
+    scan global « dernier flux activé fait foi » écrasait les autres ; cf. hooks.topology_ports qui
+    lit ce format par-port). Le format GLOBAL (width/height/scan) reste mis à jour pour compat."""
     from app.database import db_get_container, db_update_deploy_config
     w  = re.search(r"width=(\d+)", sdp)
     h  = re.search(r"height=(\d+)", sdp)
@@ -1591,17 +1594,33 @@ def _propagate_sdp_format(vmid, sdp):
     if fr:
         num = int(fr.group(1)); den = int(fr.group(2)) if fr.group(2) else 1
         new_fps = round(num / den, 2)
-    changed = (int(params.get("width") or 0) != new_w
+    # Format PAR-FLUX (rx_fmt[idx]) : keyé par recv_idx (= idx vidéo = shm {hostname}_{idx}).
+    slot_changed = False
+    if recv_idx is not None:
+        rx_fmt = dict(params.get("rx_fmt") or {})
+        slot = {"width": new_w, "height": new_h, "scan": scan, "field_order": new_fo}
+        if new_fps:
+            slot["fps"] = new_fps
+        if rx_fmt.get(str(recv_idx)) != slot:
+            rx_fmt[str(recv_idx)] = slot
+            params["rx_fmt"] = rx_fmt
+            slot_changed = True
+    global_changed = (int(params.get("width") or 0) != new_w
                or int(params.get("height") or 0) != new_h
                or str(params.get("scan") or "") != scan
                or str(params.get("field_order") or "") != new_fo)
-    if not changed:
+    # `slot_only` (repropagation au boot) : ne TOUCHE PAS le format global (width/height/scan) du
+    # container — il pourrait, en bouclant sur N flux, basculer le scan global (utilisé p.ex. côté
+    # TX). On ne fait qu'enrichir rx_fmt par-flux.
+    write_global = global_changed and not slot_only
+    if not (write_global or slot_changed):
         return
-    params["width"] = new_w; params["height"] = new_h
-    params["scan"] = scan
-    params["field_order"] = new_fo
-    if new_fps:
-        params["fps"] = new_fps
+    if write_global:
+        params["width"] = new_w; params["height"] = new_h
+        params["scan"] = scan
+        params["field_order"] = new_fo
+        if new_fps:
+            params["fps"] = new_fps
     db_update_deploy_config(vmid, dc.get("type"), params)
     try:
         notify_state_change()
@@ -1780,6 +1799,7 @@ def _restore_persisted_subscriptions():
     except Exception:
         subs = {}
     vmids = set()
+    vid_fmts = []   # (vmid, recv_idx, sdp) des flux VIDÉO actifs → repropager le format PAR-FLUX
     with _lock:
         for rid, info in subs.items():
             if rid not in _recv_state:
@@ -1794,8 +1814,19 @@ def _restore_persisted_subscriptions():
                     "sender_id": active.get("sender_id"), "active": True}
                 _receivers[rid]["version"] = _tai_version()
             vmids.add(_recv_state[rid]["vmid"])
+            if (info.get("essence") or _recv_state[rid].get("essence")) == "video":
+                _sdp = (active.get("transport_file") or {}).get("data")
+                if _sdp:
+                    vid_fmts.append((_recv_state[rid]["vmid"], _recv_state[rid].get("recv_idx"), _sdp))
     for vmid in vmids:
         threading.Thread(target=repush_subscriptions, args=(vmid,), daemon=True).start()
+    # Repropage le format PAR-FLUX (rx_fmt[idx]) depuis les SDP restaurés → la page Câbles et les
+    # consommateurs affichent le scan i/p RÉEL de chaque entrée (et pas le scan global). Idempotent.
+    for _vmid, _ridx, _sdp in vid_fmts:
+        try:
+            _propagate_sdp_format(_vmid, _sdp, _ridx, slot_only=True)
+        except Exception as e:
+            log.warning(f"nmos: repropagation format vmid={_vmid} idx={_ridx}: {e}")
     if vmids:
         log.info(f"nmos: abonnements RX restaurés depuis la DB pour {len(vmids)} container(s)")
 
