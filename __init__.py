@@ -2332,15 +2332,19 @@ def register_routes(bp):
             if d.get(k) not in (None, ""):
                 tr[k] = d[k]
         # B2-3 : pas de multicast fourni → allocation cluster-unique depuis le pool (sender seulement ;
-        # un receiver n'émet pas). L'opérateur peut toujours imposer un multicast (il prime).
+        # un receiver n'émet pas). L'opérateur peut toujours imposer un multicast (il prime). L'id est
+        # pré-généré pour réserver ATOMIQUEMENT (owner_ref='nmos:<id>') avant même la création de la
+        # ressource — sans ça, deux créations concurrentes pourraient recevoir la même adresse.
+        import uuid as _uuid
+        rid = str(_uuid.uuid4())
         if kind == "sender" and not tr.get("multicast_ip"):
             from app.allocations import allocate_multicast
-            mip, mport = allocate_multicast(tr.get("port"))
+            mip, mport = allocate_multicast(tr.get("port"), owner_ref=f"nmos:{rid}")
             if mip:
                 tr["multicast_ip"] = mip
                 tr["port"] = mport
         rid = db_nmos_resource_create(kind, essence, label,
-                                      (d.get("group_name") or label), (d.get("role") or essence), tr)
+                                      (d.get("group_name") or label), (d.get("role") or essence), tr, id=rid)
         notify_state_change()
         return jsonify({"ok": True, "id": rid})
 
@@ -2370,17 +2374,20 @@ def register_routes(bp):
         if not (1 <= count <= 256):
             return jsonify({"ok": False, "error": "count hors plage (1..256)"}), 400
         from app.allocations import allocate_multicast
+        import uuid as _uuid
         ids = []
         for i in range(count):
             n = base_index + i + 1
             tr = {}
-            if kind == "sender":                  # multicast cluster-unique par sender
-                mip, mport = allocate_multicast(None)
+            rid = str(_uuid.uuid4())
+            if kind == "sender":                  # multicast cluster-unique par sender, réservé
+                                                    # atomiquement avant la création (id pré-généré)
+                mip, mport = allocate_multicast(None, owner_ref=f"nmos:{rid}")
                 if mip:
                     tr["multicast_ip"] = mip
                     tr["port"] = mport
             rid = db_nmos_resource_create(kind, essence, f"{prefix} {n}",
-                                          grp_prefix or prefix, essence, tr)
+                                          grp_prefix or prefix, essence, tr, id=rid)
             ids.append(rid)
         notify_state_change()
         return jsonify({"ok": True, "ids": ids, "count": len(ids)})
@@ -2417,12 +2424,15 @@ def register_routes(bp):
         width = max(2, len(str(base_index + count)))
 
         def _mk(essence, label, group):
+            import uuid as _uuid
             tr = {}
-            if kind == "sender":               # multicast cluster-unique par sender
-                mip, mport = allocate_multicast(None)
+            rid = str(_uuid.uuid4())
+            if kind == "sender":               # multicast cluster-unique par sender, réservé
+                                                # atomiquement avant la création (id pré-généré)
+                mip, mport = allocate_multicast(None, owner_ref=f"nmos:{rid}")
                 if mip:
                     tr["multicast_ip"] = mip; tr["port"] = mport
-            return db_nmos_resource_create(kind, essence, label, group, essence, tr)
+            return db_nmos_resource_create(kind, essence, label, group, essence, tr, id=rid)
 
         ids, per = [], {"video": 0, "audio": 0, "data": 0}
         for i in range(count):
