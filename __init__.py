@@ -1524,6 +1524,123 @@ def is05_send_transportfile(sid):
     return (sdp, 200, {"Content-Type": "application/sdp"})
 
 
+_AUTO_ACTIVATE_BROWSE_S  = 2.5   # fenêtre de browse mDNS _nmos-node._tcp
+_AUTO_ACTIVATE_HTTP_TIMEOUT = 2  # timeout par requête HTTP vers le device distant
+
+
+def _sdp_endpoint(sdp):
+    """Lit (ip_source, ip_multicast, port) d'un SDP RX vidéo 2110-20 — `a=source-filter` prime sur
+    `o=` (plus fiable, cf. devices dont le `o=`/self-report est faux, [[io2110-blackmagic-is05-sender-activation]])."""
+    src_ip = None
+    m = re.search(r"^o=\S+ \S+ \S+ IN IP4 (\S+)", sdp, re.M)
+    if m: src_ip = m.group(1)
+    sf = re.search(r"a=source-filter:incl IN IP4 \S+ (\S+)", sdp)
+    if sf: src_ip = sf.group(1)
+    mcast_ip = None
+    c = re.search(r"^c=IN IP4 (\S+?)(?:/\d+)?\s*$", sdp, re.M)
+    if c: mcast_ip = c.group(1)
+    port = None
+    ml = re.search(r"^m=\S+ (\d+)", sdp, re.M)
+    if ml: port = int(ml.group(1))
+    return src_ip, mcast_ip, port
+
+
+def _discover_nmos_node_ports(timeout_s=_AUTO_ACTIVATE_BROWSE_S):
+    """Browse mDNS `_nmos-node._tcp.local.` et retourne l'ensemble des ports annoncés sur le LAN.
+    On ne se fie PAS à l'adresse annoncée par le service (peut être fausse sur du matériel mal
+    configuré, cf. [[io2110-blackmagic-is05-sender-activation]]) : on essaiera chaque port
+    directement sur l'IP source lue du SDP (le port d'API Node est stable par modèle/firmware)."""
+    try:
+        from zeroconf import Zeroconf, ServiceBrowser
+    except Exception as e:
+        log.info(f"nmos: auto-activation — zeroconf indisponible ({e})")
+        return set()
+    ports = set()
+
+    class _Listener:
+        def add_service(self, zc, type_, name):
+            try:
+                info = zc.get_service_info(type_, name, timeout=1000)
+                if info and info.port:
+                    ports.add(info.port)
+            except Exception:
+                pass
+        def remove_service(self, *a): pass
+        def update_service(self, *a): pass
+
+    zc = Zeroconf()
+    try:
+        ServiceBrowser(zc, "_nmos-node._tcp.local.", _Listener())
+        time.sleep(timeout_s)
+    finally:
+        try: zc.close()
+        except Exception: pass
+    return ports
+
+
+def _activate_remote_sender_if_needed(vmid, recv_idx, sdp):
+    """Best-effort : certains devices 2110 (ex. convertisseurs SDI→IP) exposent une vraie API
+    NMOS IS-04/05 mais n'émettent RIEN tant que leur propre sender n'a pas reçu le PATCH IS-05
+    d'activation (master_enable) — comportement NMOS standard, pas propriétaire. Un abonnement RX
+    fait ici à la main (SDP collé, pas de registry commun) ne déclenche jamais ce PATCH. Cette
+    fonction découvre le node NMOS du device SOURCE (mDNS + essai direct sur son IP) et active le
+    sender correspondant si besoin. Gated par le réglage `nmos_auto_activate_senders`. N'écrit
+    RIEN côté Bobi ; toute erreur est avalée (ne doit jamais perturber l'abonnement RX lui-même).
+    Voir [[io2110-blackmagic-is05-sender-activation]]."""
+    if not _setting("nmos_auto_activate_senders", False):
+        return
+    try:
+        src_ip, mcast_ip, port = _sdp_endpoint(sdp)
+        if not src_ip or not mcast_ip or not port:
+            return
+        ports = _discover_nmos_node_ports()
+        if not ports:
+            log.info(f"nmos: auto-activation vmid={vmid} idx={recv_idx} — aucun node NMOS en mDNS")
+            return
+        for node_port in ports:
+            base = f"http://{src_ip}:{node_port}"
+            try:
+                r = requests.get(f"{base}/x-nmos/node/v1.3/senders/", timeout=_AUTO_ACTIVATE_HTTP_TIMEOUT)
+                if r.status_code != 200:
+                    continue
+                senders = r.json() or []
+            except Exception:
+                continue
+            for snd in senders:
+                sid, href = snd.get("id"), snd.get("manifest_href")
+                if not sid or not href:
+                    continue
+                try:
+                    sdp_r = requests.get(href, timeout=_AUTO_ACTIVATE_HTTP_TIMEOUT)
+                    if sdp_r.status_code != 200:
+                        continue
+                    _, r_mcast, r_port = _sdp_endpoint(sdp_r.text)
+                except Exception:
+                    continue
+                if r_mcast != mcast_ip or r_port != port:
+                    continue
+                try:
+                    st = requests.get(f"{base}/x-nmos/connection/v1.0/single/senders/{sid}/staged",
+                                       timeout=_AUTO_ACTIVATE_HTTP_TIMEOUT).json() or {}
+                except Exception:
+                    st = {}
+                if st.get("master_enable"):
+                    log.info(f"nmos: auto-activation vmid={vmid} idx={recv_idx} — sender {sid}@{base} déjà actif")
+                    return
+                try:
+                    requests.patch(
+                        f"{base}/x-nmos/connection/v1.0/single/senders/{sid}/staged",
+                        json={"master_enable": True, "activation": {"mode": "activate_immediate"}},
+                        timeout=_AUTO_ACTIVATE_HTTP_TIMEOUT)
+                    log.info(f"nmos: auto-activation vmid={vmid} idx={recv_idx} — sender {sid}@{base} activé (IS-05)")
+                except Exception as e:
+                    log.warning(f"nmos: auto-activation vmid={vmid} idx={recv_idx} — PATCH échoué : {e}")
+                return
+        log.info(f"nmos: auto-activation vmid={vmid} idx={recv_idx} — aucun sender distant ne correspond à {mcast_ip}:{port}")
+    except Exception as e:
+        log.warning(f"nmos: auto-activation vmid={vmid} idx={recv_idx} échouée : {e}")
+
+
 def _activate_receiver(rid):
     """Promote staged → active, parse le SDP éventuel, notifie l'agent."""
     state = _recv_state[rid]
@@ -1557,6 +1674,9 @@ def _activate_receiver(rid):
     # auto-détecte déjà depuis le shm ; ceci aligne les autres. En thread (hors _lock NMOS).
     if essence == "video" and master_enable and sdp:
         threading.Thread(target=_propagate_sdp_format, args=(vmid, sdp, recv_idx), daemon=True).start()
+    # Active le sender NMOS distant si besoin (device armé mais jamais activé, réglage opt-in).
+    if master_enable and sdp:
+        threading.Thread(target=_activate_remote_sender_if_needed, args=(vmid, recv_idx, sdp), daemon=True).start()
     # Persiste l'état d'abonnement (survie au redémarrage de l'orchestrateur).
     _persist_subscriptions()
 
@@ -1800,6 +1920,7 @@ def _restore_persisted_subscriptions():
         subs = {}
     vmids = set()
     vid_fmts = []   # (vmid, recv_idx, sdp) des flux VIDÉO actifs → repropager le format PAR-FLUX
+    act_calls = []  # (vmid, recv_idx, sdp) tous essences → réactivation IS-05 best-effort au boot
     with _lock:
         for rid, info in subs.items():
             if rid not in _recv_state:
@@ -1814,9 +1935,10 @@ def _restore_persisted_subscriptions():
                     "sender_id": active.get("sender_id"), "active": True}
                 _receivers[rid]["version"] = _tai_version()
             vmids.add(_recv_state[rid]["vmid"])
-            if (info.get("essence") or _recv_state[rid].get("essence")) == "video":
-                _sdp = (active.get("transport_file") or {}).get("data")
-                if _sdp:
+            _sdp = (active.get("transport_file") or {}).get("data")
+            if _sdp:
+                act_calls.append((_recv_state[rid]["vmid"], _recv_state[rid].get("recv_idx"), _sdp))
+                if (info.get("essence") or _recv_state[rid].get("essence")) == "video":
                     vid_fmts.append((_recv_state[rid]["vmid"], _recv_state[rid].get("recv_idx"), _sdp))
     for vmid in vmids:
         threading.Thread(target=repush_subscriptions, args=(vmid,), daemon=True).start()
@@ -1827,6 +1949,9 @@ def _restore_persisted_subscriptions():
             _propagate_sdp_format(_vmid, _sdp, _ridx, slot_only=True)
         except Exception as e:
             log.warning(f"nmos: repropagation format vmid={_vmid} idx={_ridx}: {e}")
+    # Réactive les senders NMOS distants (redémarrage device = retombe à master_enable:false).
+    for _vmid, _ridx, _sdp in act_calls:
+        threading.Thread(target=_activate_remote_sender_if_needed, args=(_vmid, _ridx, _sdp), daemon=True).start()
     if vmids:
         log.info(f"nmos: abonnements RX restaurés depuis la DB pour {len(vmids)} container(s)")
 
@@ -2201,6 +2326,7 @@ __manifest__ = {
         # ressource) | "static" (pool fixe : un slot n'émet que s'il est explicitement câblé).
         "nmos_mode":             {"type": "str",  "default": "auto"},
         "nmos_mdns_enabled":     {"type": "bool", "default": False},
+        "nmos_auto_activate_senders": {"type": "bool", "default": False},
         "nmos_node_uuid":        {"type": "str",  "default": ""},
         "nmos_host_address":     {"type": "str",  "default": ""},
         "nmos_2110_enabled":     {"type": "bool", "default": False},
@@ -2224,6 +2350,7 @@ def register_routes(bp):
         st["node_label_setting"]     = db_get_setting("nmos_node_label", "Bobi.Studio")
         st["node_description_setting"] = db_get_setting("nmos_node_description", "")
         st["mdns_enabled_setting"]   = bool(db_get_setting("nmos_mdns_enabled", False))
+        st["auto_activate_senders_setting"] = bool(db_get_setting("nmos_auto_activate_senders", False))
         st["mode_setting"]           = db_get_setting("nmos_mode", "auto") or "auto"
         return jsonify(st)
 
@@ -2236,11 +2363,13 @@ def register_routes(bp):
         label    = (data.get("node_label") or "Bobi.Studio").strip()
         desc     = (data.get("node_description") or "").strip()
         mdns     = bool(data.get("mdns_enabled"))
+        auto_act = bool(data.get("auto_activate_senders"))
         db_set_setting("nmos_enabled",          enabled)
         db_set_setting("nmos_registry_url",     registry)
         db_set_setting("nmos_node_label",       label)
         db_set_setting("nmos_node_description", desc)
         db_set_setting("nmos_mdns_enabled",     mdns)
+        db_set_setting("nmos_auto_activate_senders", auto_act)
         # Mode de gestion des ressources (auto|static) — n'est appliqué qu'au prochain rebuild.
         if "mode" in data:
             mode = "static" if str(data.get("mode")).strip() == "static" else "auto"

@@ -1,7 +1,10 @@
 {
-  "version": "0.1.8",
-  "published_at": "2026-06-17",
+  "version": "0.1.9",
+  "published_at": "2026-07-01",
   "changes": {
+    "Nouveautés (0.1.9)": [
+      "Activation IS-05 automatique des senders NMOS distants (réglage opt-in `nmos_auto_activate_senders`, onglet Réglages → Protocoles → NMOS). Certains devices 2110 (convertisseurs SDI→IP) exposent une vraie API IS-04/05 mais n'émettent rien tant que leur sender n'a pas reçu le PATCH `master_enable:true` — un abonnement RX fait à la main (SDP collé, sans registry commun) ne le déclenchait jamais. À chaque activation RX (et à la restauration des abonnements au boot), l'orchestrateur découvre le node NMOS du device source (mDNS `_nmos-node._tcp` + essai direct sur l'IP source du SDP, sans se fier à l'IP auto-annoncée par le service qui peut être fausse), retrouve le sender correspondant (comparaison multicast/port via son propre SDP) et l'active si besoin. Best-effort, aucune erreur ne remonte à l'abonnement RX."
+    ],
     "Nouveautés (0.1.8)": [
       "Multicast cluster-unique (B2-3) : à la création d'une ressource sender du registre (POST /api/nmos/registry) sans adresse imposée, l'orchestrateur alloue un groupe multicast cluster-unique depuis le pool (app.allocations.allocate_multicast, réglages mcast_pool_base/size/port_default). Détection de collision : GET /api/nmos/registry expose un flag mcast_conflict par ressource (badge ⚠mcast dans l'éditeur), et rebuild_model émet une alerte (anti-spam) si deux ressources partagent un groupe. Les multicasts existants ne sont JAMAIS réécrits (behavior-preserving ; migration d'un parc = réassignation explicite). Aussi : host-ops résolus par-nœud (B1a/B1b — primary_host/refclk via la table nodes) ; module renommé host_ops (B1b)."
     ],

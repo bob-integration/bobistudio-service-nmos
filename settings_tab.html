@@ -12,6 +12,18 @@
                 <input type="checkbox" class="ios-toggle" id="s_nmos_mdns">
                 Annonce mDNS (_nmos-node._tcp)
             </label></div>
+            <div class="field"><label>
+                <input type="checkbox" class="ios-toggle" id="s_nmos_auto_activate">
+                Activation IS-05 auto des senders distants
+            </label></div>
+        </div>
+        <div class="meta" style="margin-top:var(--space-2)">
+            Certains devices 2110 (convertisseurs SDI→IP) exposent une vraie API NMOS IS-04/05 mais
+            n'émettent rien tant que leur propre sender n'a pas reçu le PATCH d'activation IS-05
+            (<code>master_enable</code>) — comportement NMOS standard, pas propriétaire. Si activé,
+            un abonnement RX (SDP collé à la main, sans registry commun) déclenche la découverte
+            mDNS du node du device source et active son sender si besoin. Best-effort, sans impact
+            si le device n'expose pas de node NMOS.
         </div>
         <div class="row">
             <div class="field" style="flex:1"><label>Label du Node</label>

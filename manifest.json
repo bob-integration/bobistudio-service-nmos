@@ -26,6 +26,10 @@
       "type": "bool",
       "default": false
     },
+    "nmos_auto_activate_senders": {
+      "type": "bool",
+      "default": false
+    },
     "nmos_node_uuid": {
       "type": "str",
       "default": ""
