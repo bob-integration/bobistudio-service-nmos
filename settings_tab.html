@@ -3,17 +3,17 @@
     <div class="form">
         <div class="row">
             <div class="field" style="align-self:center"><label style="display:flex; align-items:center; gap:var(--space-2)">
-                <input type="checkbox" class="ios-toggle" id="s_nmos_enabled">
+                <input type="checkbox" class="ios-toggle" id="s_nmos_enabled" onchange="_nmosTouch()">
                 Activer le provider NMOS
             </label></div>
             <div class="field" style="flex:1; min-width:320px"><label>URL du Registry RDS (vide = mode API-only)</label>
                 <input type="text" id="s_nmos_registry_url" class="wide" placeholder="http://192.0.2.x:8235"></div>
             <div class="field"><label>
-                <input type="checkbox" class="ios-toggle" id="s_nmos_mdns">
+                <input type="checkbox" class="ios-toggle" id="s_nmos_mdns" onchange="_nmosTouch()">
                 Annonce mDNS (_nmos-node._tcp)
             </label></div>
             <div class="field"><label>
-                <input type="checkbox" class="ios-toggle" id="s_nmos_auto_activate">
+                <input type="checkbox" class="ios-toggle" id="s_nmos_auto_activate" onchange="_nmosTouch()">
                 Activation IS-05 auto des senders distants
             </label></div>
         </div>

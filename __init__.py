@@ -1524,8 +1524,14 @@ def is05_send_transportfile(sid):
     return (sdp, 200, {"Content-Type": "application/sdp"})
 
 
-_AUTO_ACTIVATE_BROWSE_S  = 2.5   # fenêtre de browse mDNS _nmos-node._tcp
-_AUTO_ACTIVATE_HTTP_TIMEOUT = 2  # timeout par requête HTTP vers le device distant
+_AUTO_ACTIVATE_HTTP_TIMEOUT = 2  # timeout par requête HTTP (curl) vers le device distant
+# Ports d'API Node NMOS connus pour certains devices (ex. convertisseurs SDI→IP Blackmagic-like)
+# — essayés en direct sur l'IP source du SDP (pas de découverte mDNS : le plan média 2110 est une
+# NIC dédiée, non routée depuis le contrôleur — cf. _node_host_for_vmid). Le convertisseur
+# "IP-Converter-8x12G-SFP" expose UNE API NMOS PAR CANAL SDI (pas 1 API listant 8 senders) : 1
+# port par canal (8090=SDI1, 8092=SDI2, … pas+2), le tout joignable depuis N'IMPORTE LAQUELLE de
+# ses IP (boîtier unique multi-homé — cf. [[io2110-blackmagic-is05-sender-activation]]).
+_KNOWN_NMOS_API_PORTS = (8090, 8092, 8094, 8096, 8098, 8100, 8102, 8104)
 
 
 def _sdp_endpoint(sdp):
@@ -1545,100 +1551,142 @@ def _sdp_endpoint(sdp):
     return src_ip, mcast_ip, port
 
 
-def _discover_nmos_node_ports(timeout_s=_AUTO_ACTIVATE_BROWSE_S):
-    """Browse mDNS `_nmos-node._tcp.local.` et retourne l'ensemble des ports annoncés sur le LAN.
-    On ne se fie PAS à l'adresse annoncée par le service (peut être fausse sur du matériel mal
-    configuré, cf. [[io2110-blackmagic-is05-sender-activation]]) : on essaiera chaque port
-    directement sur l'IP source lue du SDP (le port d'API Node est stable par modèle/firmware)."""
-    try:
-        from zeroconf import Zeroconf, ServiceBrowser
-    except Exception as e:
-        log.info(f"nmos: auto-activation — zeroconf indisponible ({e})")
-        return set()
-    ports = set()
+def _node_host_for_vmid(vmid):
+    """Hôte SSH/agent du nœud hébergeant `vmid`, ou None. Le plan média 2110 (NIC dédiée) n'est
+    routable QUE depuis le nœud lui-même — un `curl`/`requests` exécuté depuis le process
+    contrôleur vers le device distant timeout systématiquement (confirmé en diagnostic, séance
+    2026-07-01) même quand une route L3 existe. Toute requête vers un sender NMOS distant doit
+    donc être exécutée via SSH/agent SUR LE NŒUD, jamais directement depuis le contrôleur."""
+    from app.database import db_get_container, db_get_node
+    c = db_get_container(vmid)
+    if not c or not c.get("node_id"):
+        return None
+    node = db_get_node(c["node_id"])
+    return node.get("host") if node else None
 
-    class _Listener:
-        def add_service(self, zc, type_, name):
-            try:
-                info = zc.get_service_info(type_, name, timeout=1000)
-                if info and info.port:
-                    ports.add(info.port)
-            except Exception:
-                pass
-        def remove_service(self, *a): pass
-        def update_service(self, *a): pass
 
-    zc = Zeroconf()
+def _curl_json(host, url, timeout=_AUTO_ACTIVATE_HTTP_TIMEOUT):
+    """GET JSON via curl exécuté SUR `host` (SSH/agent, cf. `_node_host_for_vmid`). None si
+    rc != 0 ou réponse non-JSON."""
+    from app.host_ops import ssh_run
+    rc, out, _ = ssh_run(host, f"curl -s -m {timeout} '{url}'", timeout=timeout + 5)
+    if rc != 0 or not out:
+        return None
     try:
-        ServiceBrowser(zc, "_nmos-node._tcp.local.", _Listener())
-        time.sleep(timeout_s)
-    finally:
-        try: zc.close()
-        except Exception: pass
-    return ports
+        return json.loads(out)
+    except Exception:
+        return None
+
+
+def _curl_text(host, url, timeout=_AUTO_ACTIVATE_HTTP_TIMEOUT):
+    from app.host_ops import ssh_run
+    rc, out, _ = ssh_run(host, f"curl -s -m {timeout} '{url}'", timeout=timeout + 5)
+    return out if rc == 0 and out else None
+
+
+def _curl_patch(host, url, body, timeout=_AUTO_ACTIVATE_HTTP_TIMEOUT):
+    from app.host_ops import ssh_run
+    payload = json.dumps(body).replace("'", "'\\''")
+    cmd = (f"curl -s -o /dev/null -w '%{{http_code}}' -m {timeout} -X PATCH "
+           f"-H 'Content-Type: application/json' -d '{payload}' '{url}'")
+    rc, out, err = ssh_run(host, cmd, timeout=timeout + 5)
+    return rc == 0 and (out or "").strip().startswith("2")
+
+
+def _try_activate_sender_on_ports(host, vmid, recv_idx, src_ip, mcast_ip, port, node_ports):
+    """Essaie chaque port d'API Node candidat sur `src_ip` (via curl SUR `host`, cf.
+    `_node_host_for_vmid`), cherche le sender dont le SDP matche (mcast, port) et l'active
+    (PATCH master_enable) si besoin. Retourne un dict détaillé (utilisé par le best-effort auto
+    ET par l'activation manuelle) :
+    {matched: bool, activated: bool, already_active: bool, sender_id, base, tried_ports}."""
+    tried = []
+    for node_port in node_ports:
+        base = f"http://{src_ip}:{node_port}"
+        tried.append(node_port)
+        senders = _curl_json(host, f"{base}/x-nmos/node/v1.3/senders/")
+        if not senders:
+            continue
+        for snd in senders:
+            sid, href = snd.get("id"), snd.get("manifest_href")
+            if not sid or not href:
+                continue
+            sdp_text = _curl_text(host, href)
+            if not sdp_text:
+                continue
+            _, r_mcast, r_port = _sdp_endpoint(sdp_text)
+            if r_mcast != mcast_ip or r_port != port:
+                continue
+            st = _curl_json(host, f"{base}/x-nmos/connection/v1.0/single/senders/{sid}/staged") or {}
+            if st.get("master_enable"):
+                log.info(f"nmos: auto-activation vmid={vmid} idx={recv_idx} — sender {sid}@{base} déjà actif")
+                return {"matched": True, "activated": False, "already_active": True,
+                        "sender_id": sid, "base": base, "tried_ports": tried}
+            ok = _curl_patch(host, f"{base}/x-nmos/connection/v1.0/single/senders/{sid}/staged",
+                              {"master_enable": True, "activation": {"mode": "activate_immediate"}})
+            if ok:
+                log.info(f"nmos: auto-activation vmid={vmid} idx={recv_idx} — sender {sid}@{base} activé (IS-05)")
+            else:
+                log.warning(f"nmos: auto-activation vmid={vmid} idx={recv_idx} — PATCH {sid}@{base} échoué")
+            return {"matched": True, "activated": ok, "already_active": False,
+                    "sender_id": sid, "base": base, "tried_ports": tried}
+    return {"matched": False, "activated": False, "already_active": False,
+            "sender_id": None, "base": None, "tried_ports": tried}
 
 
 def _activate_remote_sender_if_needed(vmid, recv_idx, sdp):
     """Best-effort : certains devices 2110 (ex. convertisseurs SDI→IP) exposent une vraie API
     NMOS IS-04/05 mais n'émettent RIEN tant que leur propre sender n'a pas reçu le PATCH IS-05
     d'activation (master_enable) — comportement NMOS standard, pas propriétaire. Un abonnement RX
-    fait ici à la main (SDP collé, pas de registry commun) ne déclenche jamais ce PATCH. Cette
-    fonction découvre le node NMOS du device SOURCE (mDNS + essai direct sur son IP) et active le
-    sender correspondant si besoin. Gated par le réglage `nmos_auto_activate_senders`. N'écrit
-    RIEN côté Bobi ; toute erreur est avalée (ne doit jamais perturber l'abonnement RX lui-même).
-    Voir [[io2110-blackmagic-is05-sender-activation]]."""
+    fait ici à la main (SDP collé, pas de registry commun) ne déclenche jamais ce PATCH. Essaie les
+    ports d'API Node CONNUS (_KNOWN_NMOS_API_PORTS) directement sur l'IP source du SDP — TOUJOURS
+    via SSH/agent sur le nœud hébergeant le receiver (le plan média n'est pas routable depuis le
+    contrôleur, cf. [[io2110-blackmagic-is05-sender-activation]]). Gated par le réglage
+    `nmos_auto_activate_senders`. N'écrit RIEN côté Bobi ; toute erreur est avalée (ne doit jamais
+    perturber l'abonnement RX lui-même). Voir `manual_activate_remote_sender` pour le déclenchement
+    manuel (bouton), qui remonte le résultat au lieu de l'avaler."""
     if not _setting("nmos_auto_activate_senders", False):
         return
     try:
         src_ip, mcast_ip, port = _sdp_endpoint(sdp)
         if not src_ip or not mcast_ip or not port:
             return
-        ports = _discover_nmos_node_ports()
-        if not ports:
-            log.info(f"nmos: auto-activation vmid={vmid} idx={recv_idx} — aucun node NMOS en mDNS")
+        host = _node_host_for_vmid(vmid)
+        if not host:
+            log.info(f"nmos: auto-activation vmid={vmid} idx={recv_idx} — nœud introuvable pour ce vmid")
             return
-        for node_port in ports:
-            base = f"http://{src_ip}:{node_port}"
-            try:
-                r = requests.get(f"{base}/x-nmos/node/v1.3/senders/", timeout=_AUTO_ACTIVATE_HTTP_TIMEOUT)
-                if r.status_code != 200:
-                    continue
-                senders = r.json() or []
-            except Exception:
-                continue
-            for snd in senders:
-                sid, href = snd.get("id"), snd.get("manifest_href")
-                if not sid or not href:
-                    continue
-                try:
-                    sdp_r = requests.get(href, timeout=_AUTO_ACTIVATE_HTTP_TIMEOUT)
-                    if sdp_r.status_code != 200:
-                        continue
-                    _, r_mcast, r_port = _sdp_endpoint(sdp_r.text)
-                except Exception:
-                    continue
-                if r_mcast != mcast_ip or r_port != port:
-                    continue
-                try:
-                    st = requests.get(f"{base}/x-nmos/connection/v1.0/single/senders/{sid}/staged",
-                                       timeout=_AUTO_ACTIVATE_HTTP_TIMEOUT).json() or {}
-                except Exception:
-                    st = {}
-                if st.get("master_enable"):
-                    log.info(f"nmos: auto-activation vmid={vmid} idx={recv_idx} — sender {sid}@{base} déjà actif")
-                    return
-                try:
-                    requests.patch(
-                        f"{base}/x-nmos/connection/v1.0/single/senders/{sid}/staged",
-                        json={"master_enable": True, "activation": {"mode": "activate_immediate"}},
-                        timeout=_AUTO_ACTIVATE_HTTP_TIMEOUT)
-                    log.info(f"nmos: auto-activation vmid={vmid} idx={recv_idx} — sender {sid}@{base} activé (IS-05)")
-                except Exception as e:
-                    log.warning(f"nmos: auto-activation vmid={vmid} idx={recv_idx} — PATCH échoué : {e}")
-                return
-        log.info(f"nmos: auto-activation vmid={vmid} idx={recv_idx} — aucun sender distant ne correspond à {mcast_ip}:{port}")
+        res = _try_activate_sender_on_ports(host, vmid, recv_idx, src_ip, mcast_ip, port, _KNOWN_NMOS_API_PORTS)
+        if not res["matched"]:
+            log.info(f"nmos: auto-activation vmid={vmid} idx={recv_idx} — aucun sender distant (via {host}) "
+                     f"ne correspond à {mcast_ip}:{port}")
     except Exception as e:
         log.warning(f"nmos: auto-activation vmid={vmid} idx={recv_idx} échouée : {e}")
+
+
+def manual_activate_remote_sender(vmid, recv_idx, essence="video"):
+    """Déclenchement MANUEL (bouton « Activer IS-05 ») : reprend la même logique que le
+    best-effort auto (_activate_remote_sender_if_needed) mais NE L'AVALE PAS — retourne un dict
+    exploitable par l'UI pour expliquer précisément ce qui s'est passé (pas de nœud NMOS trouvé,
+    sender introuvable, PATCH échoué, etc.), utile vu la fiabilité variable du matériel concerné
+    (cf. [[io2110-blackmagic-is05-sender-activation]]). Ignore le réglage `nmos_auto_activate_senders`
+    (un clic explicite doit toujours tenter, réglage ou pas)."""
+    sdp = active_sdp_for(vmid, recv_idx, essence)
+    if not sdp:
+        return {"ok": False, "error": "aucun SDP actif sur ce flux"}
+    src_ip, mcast_ip, port = _sdp_endpoint(sdp)
+    if not src_ip or not mcast_ip or not port:
+        return {"ok": False, "error": "SDP illisible (source/multicast/port introuvables)"}
+    host = _node_host_for_vmid(vmid)
+    if not host:
+        return {"ok": False, "error": "nœud introuvable pour ce conteneur"}
+    try:
+        res = _try_activate_sender_on_ports(host, vmid, recv_idx, src_ip, mcast_ip, port, _KNOWN_NMOS_API_PORTS)
+    except Exception as e:
+        return {"ok": False, "error": f"erreur : {e}"}
+    if not res["matched"]:
+        return {"ok": False, "error": f"aucun sender distant (via {host}, ports {res['tried_ports']}) "
+                                       f"ne correspond à {mcast_ip}:{port}"}
+    return {"ok": True, "already_active": res["already_active"], "activated": res["activated"],
+            "sender_id": res["sender_id"], "base": res["base"]}
 
 
 def _activate_receiver(rid):
