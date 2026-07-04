@@ -1902,7 +1902,8 @@ def _notify_agent(vmid, recv_idx, essence, enable, sdp, mcast_info):
             "source_ip": mcast_info.get("source_ip"),
         }
     try:
-        r = requests.post(f"http://{ip}:8081/nmos/subscribe",
+        from app import deploy
+        r = deploy.agent_session().post(deploy.agent_url(ip, "/nmos/subscribe"),
                           json=payload, timeout=5)
         if r.status_code == 200:
             db_add_alert(
@@ -1925,13 +1926,14 @@ def repush_subscriptions(vmid):
     restaure les sessions RX SANS intervention du contrôleur NMOS externe (corrige la perte des
     flux à chaque redéploiement). Attend d'abord que l'agent :8081 réponde."""
     from app.addressing import get_container_ip
+    from app import deploy
     import time as _t
     ip = get_container_ip(vmid)
     if not ip:
         return 0
     for _ in range(30):   # readiness :8081 (le contrôleur met quelques s à (re)démarrer)
         try:
-            if requests.get(f"http://{ip}:8081/status", timeout=2).status_code == 200:
+            if deploy.agent_session().get(deploy.agent_url(ip, "/status"), timeout=2).status_code == 200:
                 break
         except Exception:
             pass
