@@ -1,7 +1,11 @@
 {
-  "version": "0.1.9",
-  "published_at": "2026-07-01",
+  "version": "0.1.10",
+  "published_at": "2026-07-04",
   "changes": {
+    "Nouveautés (0.1.10)": [
+      "Conformité IS-05 (diagnostic Horace) : les paramètres extraits du transport_file d'un receiver (multicast_ip/destination_port/source_ip) sont désormais REFLÉTÉS dans `/x-nmos/connection/…/active.transport_params` à l'activation. Avant, `multicast_ip` restait null même flux reçu → tout contrôleur externe voyait les receivers comme non abonnés.",
+      "Défauts multicast UNIQUES des senders sans adresse configurée : vidéo par slot TX dérivée de l'index (239.10.10.<tx+1>), audio global dérivé de l'index (239.10.20.<a+1>), vidéo legacy dérivée du vmid (239.10.30.x). Un défaut partagé faisait qu'activer un slot resté aux défauts écrasait un flux existant."
+    ],
     "Nouveautés (0.1.9)": [
       "Activation IS-05 automatique des senders NMOS distants (réglage opt-in `nmos_auto_activate_senders`, onglet Réglages → Protocoles → NMOS). Certains devices 2110 (convertisseurs SDI→IP) exposent une vraie API IS-04/05 mais n'émettent rien tant que leur sender n'a pas reçu le PATCH `master_enable:true` — un abonnement RX fait à la main (SDP collé, sans registry commun) ne le déclenchait jamais. À chaque activation RX (et à la restauration des abonnements au boot), l'orchestrateur découvre le node NMOS du device source (mDNS `_nmos-node._tcp` + essai direct sur l'IP source du SDP, sans se fier à l'IP auto-annoncée par le service qui peut être fausse), retrouve le sender correspondant (comparaison multicast/port via son propre SDP) et l'active si besoin. Best-effort, aucune erreur ne remonte à l'abonnement RX."
     ],

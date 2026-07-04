@@ -630,7 +630,9 @@ def rebuild_model():
         # Sender vidéo (0 ou 1)
         if has_video_send:
             v = (dc.get("params") or {}).get("video") or {}
-            mcast = v.get("multicast_ip") or "239.10.10.1"
+            # Défaut UNIQUE par container (dérivé du vmid, base dédiée) : un défaut partagé
+            # (ex-239.10.10.1) écrase un flux existant dès qu'on active un slot resté aux défauts.
+            mcast = v.get("multicast_ip") or "239.10.30.{}".format((vmid % 250) + 1)
             port  = int(v.get("dest_port") or 5000)
             width = int(v.get("width") or 1280)
             height= int(v.get("height") or 720)
@@ -687,7 +689,9 @@ def rebuild_model():
         # Senders vidéo MOTEUR (slots TX) — un sender NMOS par entrée tx_slots, keyé sur tx_idx.
         # (Additif : sans tx_slots, aucun sender — les receivers/senders existants sont inchangés.)
         for tx_idx, tslot in enumerate(tx_slots):
-            mcast = tslot.get("multicast_ip") or "239.10.10.1"
+            # Défaut UNIQUE par slot (dérivé de tx_idx ; TX0 = .1 rétro-compat) — jamais la même
+            # adresse pour deux slots : activer un slot aux défauts n'écrase plus le flux d'un autre.
+            mcast = tslot.get("multicast_ip") or "239.10.10.{}".format((tx_idx % 250) + 1)
             port  = int(tslot.get("dest_port") or 5000)
             width = int(tslot.get("width") or 1280)
             height = int(tslot.get("height") or 720)
@@ -759,7 +763,8 @@ def rebuild_model():
 
         # Senders audio (0, 1 ou 2)
         for a_idx, a in enumerate((dc.get("params") or {}).get("audios") or []):
-            mcast = a.get("multicast_ip") or "239.10.20.1"
+            # Défaut UNIQUE par flux audio (a_idx 0 = .1 rétro-compat).
+            mcast = a.get("multicast_ip") or "239.10.20.{}".format((a_idx % 250) + 1)
             port  = int(a.get("dest_port") or (5004 + 2 * a_idx))
             label  = f"{c.get('hostname') or vmid} 2110-30 #{a_idx}"
             snd_id, label = _registry_id(f"sender:a:{vmid}:{a_idx}", instance_uuid, f"a:{a_idx}", "audio",
@@ -1712,6 +1717,18 @@ def _activate_receiver(rid):
     sdp = (state["active"].get("transport_file") or {}).get("data")
     dual = len(state["active"].get("transport_params") or []) >= 2
     mcast_info = _extract_mcast_info(state["active"], smpte_2022_7=dual)
+    # Conformité IS-05 : les paramètres issus du transport_file PRIMENT et doivent être VISIBLES
+    # dans /active.transport_params (multicast_ip/destination_port/source_ip). Sans ce back-fill,
+    # un contrôleur externe voit multicast_ip=null et croit le receiver non abonné alors que le
+    # flux est reçu (constaté au diagnostic Horace 2026-07).
+    infos = mcast_info if isinstance(mcast_info, list) else [mcast_info]
+    tps = state["active"].get("transport_params") or []
+    for i, inf in enumerate(infos):
+        if i < len(tps) and isinstance(inf, dict):
+            tps[i].update({k: v for k, v in inf.items() if v is not None})
+    with _lock:
+        if rid in _receivers:
+            _receivers[rid]["version"] = _tai_version()
     threading.Thread(
         target=_notify_agent,
         args=(vmid, recv_idx, essence, master_enable, sdp, mcast_info),
