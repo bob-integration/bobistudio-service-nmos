@@ -2392,6 +2392,11 @@ __manifest__ = {
         "nmos_mode":             {"type": "str",  "default": "auto"},
         "nmos_mdns_enabled":     {"type": "bool", "default": False},
         "nmos_auto_activate_senders": {"type": "bool", "default": False},
+        # a=source-filter (SSM) dans les SDP TX du moteur 2110. True = bonne pratique sur fabric
+        # SSM-capable (PIM-SSM/NBM) ; False pour un switch L2 en IGMP snooping pur (le join (S,G)
+        # y est enregistré mais jamais forwardé → 0 Mbps silencieux). Plombé par docker_driver
+        # (env SDP_SOURCE_FILTER), appliqué au redéploiement du moteur.
+        "nmos_sdp_source_filter": {"type": "bool", "default": True},
         "nmos_node_uuid":        {"type": "str",  "default": ""},
         "nmos_host_address":     {"type": "str",  "default": ""},
         "nmos_2110_enabled":     {"type": "bool", "default": False},
@@ -2416,6 +2421,7 @@ def register_routes(bp):
         st["node_description_setting"] = db_get_setting("nmos_node_description", "")
         st["mdns_enabled_setting"]   = bool(db_get_setting("nmos_mdns_enabled", False))
         st["auto_activate_senders_setting"] = bool(db_get_setting("nmos_auto_activate_senders", False))
+        st["sdp_source_filter_setting"] = bool(db_get_setting("nmos_sdp_source_filter", True))
         st["mode_setting"]           = db_get_setting("nmos_mode", "auto") or "auto"
         return jsonify(st)
 
@@ -2429,12 +2435,14 @@ def register_routes(bp):
         desc     = (data.get("node_description") or "").strip()
         mdns     = bool(data.get("mdns_enabled"))
         auto_act = bool(data.get("auto_activate_senders"))
+        sdp_sf   = bool(data.get("sdp_source_filter", True))
         db_set_setting("nmos_enabled",          enabled)
         db_set_setting("nmos_registry_url",     registry)
         db_set_setting("nmos_node_label",       label)
         db_set_setting("nmos_node_description", desc)
         db_set_setting("nmos_mdns_enabled",     mdns)
         db_set_setting("nmos_auto_activate_senders", auto_act)
+        db_set_setting("nmos_sdp_source_filter", sdp_sf)
         # Mode de gestion des ressources (auto|static) — n'est appliqué qu'au prochain rebuild.
         if "mode" in data:
             mode = "static" if str(data.get("mode")).strip() == "static" else "auto"

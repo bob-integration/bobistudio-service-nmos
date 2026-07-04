@@ -30,6 +30,10 @@
       "type": "bool",
       "default": false
     },
+    "nmos_sdp_source_filter": {
+      "type": "bool",
+      "default": true
+    },
     "nmos_node_uuid": {
       "type": "str",
       "default": ""

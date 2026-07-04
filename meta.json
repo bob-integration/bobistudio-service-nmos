@@ -1,7 +1,10 @@
 {
-  "version": "0.1.10",
+  "version": "0.1.11",
   "published_at": "2026-07-04",
   "changes": {
+    "Nouveautés (0.1.11)": [
+      "Réglage `nmos_sdp_source_filter` (défaut activé) : le filtre de source SSM (`a=source-filter`) des SDP TX du moteur 2110 se pilote depuis l'onglet Réglages → Protocoles → NMOS (toggle + statut/apply dans /api/nmos/status et /api/nmos/apply). Décocher sur un switch L2 en IGMP snooping pur (join SSM (S,G) enregistré mais jamais forwardé). Plombé par l'orchestrateur vers l'env SDP_SOURCE_FILTER du moteur ; appliqué au redéploiement."
+    ],
     "Nouveautés (0.1.10)": [
       "Conformité IS-05 (diagnostic Horace) : les paramètres extraits du transport_file d'un receiver (multicast_ip/destination_port/source_ip) sont désormais REFLÉTÉS dans `/x-nmos/connection/…/active.transport_params` à l'activation. Avant, `multicast_ip` restait null même flux reçu → tout contrôleur externe voyait les receivers comme non abonnés.",
       "Défauts multicast UNIQUES des senders sans adresse configurée : vidéo par slot TX dérivée de l'index (239.10.10.<tx+1>), audio global dérivé de l'index (239.10.20.<a+1>), vidéo legacy dérivée du vmid (239.10.30.x). Un défaut partagé faisait qu'activer un slot resté aux défauts écrasait un flux existant."

@@ -16,6 +16,17 @@
                 <input type="checkbox" class="ios-toggle" id="s_nmos_auto_activate" onchange="_nmosTouch()">
                 Activation IS-05 auto des senders distants
             </label></div>
+            <div class="field"><label>
+                <input type="checkbox" class="ios-toggle" id="s_nmos_sdp_source_filter" checked onchange="_nmosTouch()">
+                Filtre de source SSM dans les SDP (a=source-filter)
+            </label></div>
+        </div>
+        <div class="meta" style="margin-top:var(--space-2)">
+            Annonce la source dans les SDP TX du moteur 2110 → le récepteur fait un join IGMPv3
+            <b>SSM (S,G)</b>. Recommandé sur un fabric SSM-capable (PIM-SSM / NBM).
+            <b>Décocher sur un switch L2 en IGMP snooping pur</b> : le join (S,G) y est enregistré
+            mais jamais forwardé (0 Mbps silencieux) — sans la ligne, le récepteur retombe sur un
+            join (*,G) qui est livré. Appliqué au <b>redéploiement</b> du moteur.
         </div>
         <div class="meta" style="margin-top:var(--space-2)">
             Certains devices 2110 (convertisseurs SDI→IP) exposent une vraie API NMOS IS-04/05 mais
