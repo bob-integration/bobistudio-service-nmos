@@ -205,7 +205,7 @@ def _build_flow_resource(fid, did, src_id, vmid, label, width, height, version, 
     }
 
 
-def _build_sender_resource(snd_id, did, fid, vmid, label, version):
+def _build_sender_resource(snd_id, did, fid, vmid, label, version, legs=1):
     host = _get_host_address()
     return {
         "id": snd_id,
@@ -217,13 +217,13 @@ def _build_sender_resource(snd_id, did, fid, vmid, label, version):
         "flow_id": fid,
         "transport": "urn:x-nmos:transport:rtp.mcast",
         "manifest_href": f"http://{host}:5000/x-nmos/connection/{IS05_VERSION}/single/senders/{snd_id}/transportfile",
-        "interface_bindings": [_primary_iface()],
+        "interface_bindings": _iface_bindings(vmid, legs),
         "subscription": {"receiver_id": None, "active": False},
         "caps": {},
     }
 
 
-def _build_receiver_resource(rid, did, vmid, recv_idx, label, version, fmt="video"):
+def _build_receiver_resource(rid, did, vmid, recv_idx, label, version, fmt="video", legs=1):
     media_types = {"video": ["video/raw"], "audio": ["audio/L24"], "data": ["video/smpte291"]}[fmt]
     return {
         "id": rid,
@@ -236,7 +236,7 @@ def _build_receiver_resource(rid, did, vmid, recv_idx, label, version, fmt="vide
         "format": f"urn:x-nmos:format:{fmt}",
         "subscription": {"sender_id": None, "active": False},
         "caps": {"media_types": media_types},
-        "interface_bindings": [_primary_iface()],
+        "interface_bindings": _iface_bindings(vmid, legs),
     }
 
 
@@ -445,6 +445,36 @@ def _setting(key, default):
     v = db_get_setting(key, None)
     return v if v is not None else default
 
+_ifb_cache = {}   # vmid → (ts, [ifnames media2110 du nœud, red d'abord]) — évite N requêtes DB par rebuild
+
+def _media_ifaces_of(vmid):
+    """NIC média 2110 du NŒUD qui héberge `vmid` (node_interfaces role=media2110, red en tête,
+    blue ensuite — ordre des legs 2022-7). [] si nœud/interfaces inconnus. Cache 10 s."""
+    ent = _ifb_cache.get(vmid)
+    if ent and time.time() - ent[0] < 10:
+        return ent[1]
+    out = []
+    try:
+        from app.database import db_get_container, db_get_node_interfaces
+        c = db_get_container(int(vmid)) if vmid is not None else None
+        if c and c.get("node_id"):
+            rows = [r for r in db_get_node_interfaces(c["node_id"]) if r.get("role") == "media2110"]
+            rows.sort(key=lambda r: ((r.get("pair_role") or "red") != "red", r.get("ifname") or ""))
+            out = [r["ifname"] for r in rows if r.get("ifname")]
+    except Exception:
+        out = []
+    _ifb_cache[vmid] = (time.time(), out)
+    return out
+
+def _iface_bindings(vmid, legs=1):
+    """interface_bindings IS-04 : les NIC média du nœud du container — 1 entrée (red) ou 2
+    (red+blue, 2022-7, cohérent avec le nombre de transport_params legs). Un labo NMOS vérifie
+    cette cohérence. Repli historique (NIC locale du contrôleur) si rien de déclaré en base."""
+    ifs = _media_ifaces_of(vmid)
+    if not ifs:
+        return [_primary_iface()]
+    return ifs[:max(1, min(int(legs or 1), len(ifs)))]
+
 def _primary_iface():
     """Trouve le nom de la NIC principale (première non-loopback up avec une MAC)."""
     try:
@@ -573,7 +603,7 @@ def rebuild_model():
                                       bind_override=nmos_bind.get(f"v:{idx}"), allow_autoseed=allow_autoseed)
             if rid is None:
                 continue
-            new_receivers[rid] = _build_receiver_resource(rid, did, vmid, idx, label, version, fmt="video")
+            new_receivers[rid] = _build_receiver_resource(rid, did, vmid, idx, label, version, fmt="video", legs=n_legs)
             _set_grouphint(new_receivers[rid], _grp_name(idx), "video")
             new_devices[did]["receivers"].append(rid)
             cur = _recv_state.get(rid)
@@ -595,7 +625,7 @@ def rebuild_model():
                                       bind_override=nmos_bind.get(f"a:{idx}"), allow_autoseed=allow_autoseed)
             if rid is None:
                 continue
-            new_receivers[rid] = _build_receiver_resource(rid, did, vmid, idx, label, version, fmt="audio")
+            new_receivers[rid] = _build_receiver_resource(rid, did, vmid, idx, label, version, fmt="audio", legs=n_legs)
             _set_grouphint(new_receivers[rid], grp, f"audio {n}")
             new_devices[did]["receivers"].append(rid)
             cur = _recv_state.get(rid)
@@ -617,7 +647,7 @@ def rebuild_model():
                                       bind_override=nmos_bind.get(f"d:{idx}"), allow_autoseed=allow_autoseed)
             if rid is None:
                 continue
-            new_receivers[rid] = _build_receiver_resource(rid, did, vmid, idx, label, version, fmt="data")
+            new_receivers[rid] = _build_receiver_resource(rid, did, vmid, idx, label, version, fmt="data", legs=n_legs)
             _set_grouphint(new_receivers[rid], grp, f"anc {n}")
             new_devices[did]["receivers"].append(rid)
             cur = _recv_state.get(rid)
@@ -668,6 +698,8 @@ def rebuild_model():
                 mcast1_v = v.get("multicast_ip_leg1")
                 port1_v  = v.get("dest_port_leg1")
                 leg1_v   = (mcast1_v, port1_v) if (smpte_2022_7_v and mcast1_v and port1_v) else None
+                if leg1_v:
+                    new_senders[snd_id]["interface_bindings"] = _iface_bindings(vmid, 2)
                 if snd_id not in _send_state:
                     empty = _empty_sender_staged(mcast, port, leg1=leg1_v)
                     _send_state[snd_id] = {
@@ -738,6 +770,8 @@ def rebuild_model():
             mcast1_v = tslot.get("multicast_ip_leg1")
             port1_v  = tslot.get("dest_port_leg1")
             leg1_v   = (mcast1_v, port1_v) if (smpte_v and mcast1_v and port1_v) else None
+            if leg1_v:
+                new_senders[snd_id]["interface_bindings"] = _iface_bindings(vmid, 2)
             if snd_id not in _send_state:
                 empty = _empty_sender_staged(mcast, port, leg1=leg1_v)
                 _send_state[snd_id] = {
@@ -783,6 +817,8 @@ def rebuild_model():
             mcast1_a = a.get("multicast_ip_leg1")
             port1_a  = a.get("dest_port_leg1")
             leg1_a   = (mcast1_a, port1_a) if (smpte_2022_7_a and mcast1_a and port1_a) else None
+            if leg1_a:
+                new_senders[snd_id]["interface_bindings"] = _iface_bindings(vmid, 2)
             if snd_id not in _send_state:
                 empty = _empty_sender_staged(mcast, port, leg1=leg1_a)
                 _send_state[snd_id] = {
@@ -821,6 +857,8 @@ def rebuild_model():
                 mcast1_a = acfg.get("multicast_ip_leg1")
                 port1_a  = acfg.get("dest_port_leg1")
                 leg1_a   = (mcast1_a, port1_a) if (smpte_a and mcast1_a and port1_a) else None
+                if leg1_a:
+                    new_senders[snd_id]["interface_bindings"] = _iface_bindings(vmid, 2)
                 if snd_id not in _send_state:
                     empty_a = _empty_sender_staged(mcast, port, leg1=leg1_a)
                     _send_state[snd_id] = {
@@ -862,6 +900,8 @@ def rebuild_model():
             mcast1_d = tslot.get("anc_multicast_ip_leg1")
             port1_d  = tslot.get("anc_dest_port_leg1")
             leg1_d   = (mcast1_d, port1_d) if (smpte_d and mcast1_d and port1_d) else None
+            if leg1_d:
+                new_senders[snd_id]["interface_bindings"] = _iface_bindings(vmid, 2)
             if snd_id not in _send_state:
                 empty = _empty_sender_staged(mcast, port, leg1=leg1_d)
                 _send_state[snd_id] = {
@@ -1823,17 +1863,30 @@ def _propagate_sdp_format(vmid, sdp, recv_idx=None, slot_only=False):
 
 def _build_dual_sdp(sdp_leg0, mcast1, port1):
     """Greffe une deuxième section m= (leg1) sur sdp_leg0 pour SMPTE 2022-7.
-    Retourne un unique SDP avec deux blocs media (leg0 + leg1)."""
+    Retourne un unique SDP avec deux blocs media (leg0 + leg1), groupés RFC 7104
+    (a=group:DUP au niveau session + a=mid: par section — ce que produisent aussi les
+    SDP TX du moteur et qu'attend un analyseur de labo)."""
     if not sdp_leg0 or not mcast1 or not port1:
         return sdp_leg0 or ""
     m = re.search(r"(m=(?:video|audio|application) )", sdp_leg0)
     if not m:
         return sdp_leg0
-    media_block = sdp_leg0[m.start():]
+    nl = "\r\n" if "\r\n" in sdp_leg0 else "\n"
+    head, media_block = sdp_leg0[:m.start()], sdp_leg0[m.start():]
+    # Idempotent : un transport_file déjà dual-section (a=group:DUP) est renvoyé tel quel.
+    if re.search(r"^a=group:DUP", sdp_leg0, re.M) or len(re.findall(r"^m=", sdp_leg0, re.M)) > 1:
+        return sdp_leg0
     leg1 = re.sub(r"(m=(?:video|audio|application) )\d+", rf"\g<1>{int(port1)}", media_block)
     leg1 = re.sub(r"(c=IN IP4 )[\d.]+", rf"\g<1>{mcast1}", leg1)
     leg1 = re.sub(r"(a=source-filter: incl IN IP4 )[\d.]+", rf"\g<1>{mcast1}", leg1)
-    return sdp_leg0 + leg1
+    if not head.endswith(nl):
+        head += nl
+    head += "a=group:DUP DUP-1 DUP-2" + nl
+    if not media_block.endswith(nl):
+        media_block += nl
+    if not leg1.endswith(nl):
+        leg1 += nl
+    return head + media_block + "a=mid:DUP-1" + nl + leg1 + "a=mid:DUP-2" + nl
 
 def _extract_mcast_info(active, smpte_2022_7=False):
     """Résume les transport_params + SDP.
