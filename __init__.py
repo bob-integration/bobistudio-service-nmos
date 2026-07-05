@@ -229,7 +229,7 @@ def _build_receiver_resource(rid, did, vmid, recv_idx, label, version, fmt="vide
         "id": rid,
         "version": version,
         "label": label,
-        "description": f"Receiver {fmt} #{recv_idx} sur container {vmid}",
+        "description": f"Receiver {fmt} #{recv_idx + 1} sur container {vmid}",
         "tags": {"urn:x-mxl:vmid": [str(vmid)], "urn:x-mxl:receiver_index": [str(recv_idx)]},
         "device_id": did,
         "transport": "urn:x-nmos:transport:rtp.mcast",
@@ -567,7 +567,7 @@ def rebuild_model():
         # Receivers vidéo — un bundle (group_name) par flux vidéo
         for vf in _rx_videos:
             idx = vf["idx"]
-            label = f"{c.get('hostname') or vmid} #r{idx} (video)"
+            label = f"{c.get('hostname') or vmid} Rx {idx + 1} (video)"
             rid, label = _registry_id(f"receiver:v:{vmid}:{idx}", instance_uuid, f"v:{idx}", "video",
                                       "receiver", label, {}, _grp_name(idx), "video",
                                       bind_override=nmos_bind.get(f"v:{idx}"), allow_autoseed=allow_autoseed)
@@ -589,7 +589,7 @@ def rebuild_model():
             vi  = _rx_vid_of.get(("audio", idx))
             n   = (_rx_sub_of.get(("audio", idx), 0) or 0) + 1
             grp = _child_grp(vi, "audio", idx)
-            label = f"{c.get('hostname') or vmid} #ra{idx} (audio)"
+            label = f"{c.get('hostname') or vmid} Rx {idx + 1} (audio)"
             rid, label = _registry_id(f"receiver:a:{vmid}:{idx}", instance_uuid, f"a:{idx}", "audio",
                                       "receiver", label, {}, grp, f"audio {n}",
                                       bind_override=nmos_bind.get(f"a:{idx}"), allow_autoseed=allow_autoseed)
@@ -611,7 +611,7 @@ def rebuild_model():
             vi  = _rx_vid_of.get(("anc", idx))
             n   = (_rx_sub_of.get(("anc", idx), 0) or 0) + 1
             grp = _child_grp(vi, "anc", idx)
-            label = f"{c.get('hostname') or vmid} #rd{idx} (anc)"
+            label = f"{c.get('hostname') or vmid} Rx {idx + 1} (anc)"
             rid, label = _registry_id(f"receiver:d:{vmid}:{idx}", instance_uuid, f"d:{idx}", "data",
                                       "receiver", label, {}, grp, f"anc {n}",
                                       bind_override=nmos_bind.get(f"d:{idx}"), allow_autoseed=allow_autoseed)
@@ -715,7 +715,7 @@ def rebuild_model():
                     _src_fmt = {}
             _scan = str(_src_fmt.get("scan") or dc_params.get("scan") or "p")
             _fo   = str(_src_fmt.get("field_order") or dc_params.get("field_order") or "")
-            label  = f"{c.get('hostname') or vmid} TX{tx_idx} 2110-20"
+            label  = f"{c.get('hostname') or vmid} TX{tx_idx + 1} 2110-20"
             _tr = {"multicast_ip": mcast, "port": port, "width": width, "height": height,
                    "chroma": chroma, "bit_depth": bit_depth, "colorspace": cs, "transfer": transfer,
                    "scan": _scan, "field_order": _fo, "fps": tslot.get("fps")}
@@ -766,7 +766,7 @@ def rebuild_model():
             # Défaut UNIQUE par flux audio (a_idx 0 = .1 rétro-compat).
             mcast = a.get("multicast_ip") or "239.10.20.{}".format((a_idx % 250) + 1)
             port  = int(a.get("dest_port") or (5004 + 2 * a_idx))
-            label  = f"{c.get('hostname') or vmid} 2110-30 #{a_idx}"
+            label  = f"{c.get('hostname') or vmid} 2110-30 #{a_idx + 1}"
             snd_id, label = _registry_id(f"sender:a:{vmid}:{a_idx}", instance_uuid, f"a:{a_idx}", "audio",
                                          "sender", label, {"multicast_ip": mcast, "port": port}, base, f"audio {a_idx + 1}",
                                          bind_override=nmos_bind.get(f"a:{a_idx}"), allow_autoseed=allow_autoseed)
@@ -802,7 +802,7 @@ def rebuild_model():
                 if not mcast:
                     continue
                 port   = int(acfg.get("dest_port") or 0)
-                label  = f"{c.get('hostname') or vmid} TX{tx_idx} 2110-30 #{ai}"
+                label  = f"{c.get('hostname') or vmid} TX{tx_idx + 1} 2110-30 #{ai + 1}"
                 snd_id, label = _registry_id(f"sender:a:{vmid}:tx{tx_idx}:{ai}", instance_uuid,
                                              f"tx{tx_idx}:a{ai}", "audio", "sender", label,
                                              {"multicast_ip": mcast, "port": port},
@@ -844,7 +844,7 @@ def rebuild_model():
             if not mcast:
                 continue
             port = int(tslot.get("anc_dest_port") or 0)
-            label  = f"{c.get('hostname') or vmid} TX{tx_idx} 2110-40"
+            label  = f"{c.get('hostname') or vmid} TX{tx_idx + 1} 2110-40"
             snd_id, label = _registry_id(f"sender:d:{vmid}:tx{tx_idx}", instance_uuid, f"tx{tx_idx}:d",
                                          "data", "sender", label, {"multicast_ip": mcast, "port": port},
                                          f"{base} TX {tx_idx + 1}", "anc",
@@ -1876,7 +1876,7 @@ def _notify_agent(vmid, recv_idx, essence, enable, sdp, mcast_info):
     ip = get_container_ip(vmid)
     if not ip:
         log.warning(f"nmos: pas d'IP pour container {vmid}, subscription ignorée")
-        db_add_alert(f"NMOS subscription receiver #{recv_idx}/{essence} container {vmid}: IP introuvable", "warning")
+        db_add_alert(f"NMOS subscription receiver #{recv_idx + 1}/{essence} container {vmid}: IP introuvable", "warning")
         return
     if isinstance(mcast_info, list):
         # SMPTE 2022-7 : un unique SDP avec deux sections m= (leg0 + leg1)
@@ -1907,7 +1907,7 @@ def _notify_agent(vmid, recv_idx, essence, enable, sdp, mcast_info):
                           json=payload, timeout=5)
         if r.status_code == 200:
             db_add_alert(
-                f"NMOS receiver #{recv_idx}/{essence} container {vmid} → "
+                f"NMOS receiver #{recv_idx + 1}/{essence} container {vmid} → "
                 f"{'subscribe' if enable else 'unsubscribe'}", "info")
         else:
             log.warning(f"nmos: agent {vmid} a renvoyé {r.status_code}")
