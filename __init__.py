@@ -1881,12 +1881,12 @@ def _build_dual_sdp(sdp_leg0, mcast1, port1):
     leg1 = re.sub(r"(a=source-filter: incl IN IP4 )[\d.]+", rf"\g<1>{mcast1}", leg1)
     if not head.endswith(nl):
         head += nl
-    head += "a=group:DUP DUP-1 DUP-2" + nl
+    head += "a=group:DUP PRIMARY SECONDARY" + nl
     if not media_block.endswith(nl):
         media_block += nl
     if not leg1.endswith(nl):
         leg1 += nl
-    return head + media_block + "a=mid:DUP-1" + nl + leg1 + "a=mid:DUP-2" + nl
+    return head + media_block + "a=mid:PRIMARY" + nl + leg1 + "a=mid:SECONDARY" + nl
 
 def _extract_mcast_info(active, smpte_2022_7=False):
     """Résume les transport_params + SDP.
