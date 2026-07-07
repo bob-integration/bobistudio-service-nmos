@@ -1956,7 +1956,10 @@ def _notify_agent(vmid, recv_idx, essence, enable, sdp, mcast_info):
         }
     try:
         from app import deploy
-        r = deploy.agent_session().post(deploy.agent_url(ip, "/nmos/subscribe"),
+        # Port du contrat agent : :8081 par défaut, offsetté (:base+1) pour une sonde probe_2110
+        # coexistant avec un moteur sur le même nœud (--network host, cf. controller_port_base).
+        _aport = deploy.agent_port(vmid)
+        r = deploy.agent_session().post(deploy.agent_url(ip, "/nmos/subscribe", port=_aport),
                           json=payload, timeout=5)
         if r.status_code == 200:
             db_add_alert(
@@ -1984,9 +1987,10 @@ def repush_subscriptions(vmid):
     ip = get_container_ip(vmid)
     if not ip:
         return 0
-    for _ in range(30):   # readiness :8081 (le contrôleur met quelques s à (re)démarrer)
+    _aport = deploy.agent_port(vmid)   # :8081 défaut, offsetté (:base+1) pour une sonde probe_2110
+    for _ in range(30):   # readiness agent (le contrôleur met quelques s à (re)démarrer)
         try:
-            if deploy.agent_session().get(deploy.agent_url(ip, "/status"), timeout=2).status_code == 200:
+            if deploy.agent_session().get(deploy.agent_url(ip, "/status", port=_aport), timeout=2).status_code == 200:
                 break
         except Exception:
             pass

@@ -1,7 +1,10 @@
 {
-  "version": "0.1.11",
-  "published_at": "2026-07-04",
+  "version": "0.1.12",
+  "published_at": "2026-07-07",
   "changes": {
+    "Nouveautés (0.1.12)": [
+      "Sonde probe_2110 : l'abonnement RX (manual_subscribe → chaîne IS-05) et son re-push après (re)déploiement ciblent désormais le contrat agent sur le bon port. Une sonde qui coexiste avec un moteur sur le même nœud (banc de conformité loopback, --network host) offsette ses ports contrôleur (CONTROLLER_PORT_BASE) → _notify_agent et repush_subscriptions passent par deploy.agent_port(vmid) (= :base+1) au lieu de :8081 en dur. Un moteur/receiver mono-nœud reste sur :8081 (offset défaut 0), comportement inchangé. (rebuild_model / bindable_containers reconnaissaient DÉJÀ la sonde comme porteuse de receivers via son manifeste nmos_role=receiver — aucun == \"2110_io\" codé en dur à étendre.)"
+    ],
     "Nouveautés (0.1.11)": [
       "Réglage `nmos_sdp_source_filter` (défaut activé) : le filtre de source SSM (`a=source-filter`) des SDP TX du moteur 2110 se pilote depuis l'onglet Réglages → Protocoles → NMOS (toggle + statut/apply dans /api/nmos/status et /api/nmos/apply). Décocher sur un switch L2 en IGMP snooping pur (join SSM (S,G) enregistré mais jamais forwardé). Plombé par l'orchestrateur vers l'env SDP_SOURCE_FILTER du moteur ; appliqué au redéploiement."
     ],
