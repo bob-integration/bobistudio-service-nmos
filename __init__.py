@@ -1548,6 +1548,11 @@ def is05_send_transportfile(sid):
         from app.addressing import primary_host as _primary_host
         if tx_idx is not None:
             refclk = _ptp.refclk_for_host(ip)              # ptp4l du nœud du sender (domaine = réglage)
+            if not refclk:
+                # Socle full-PF DPDK : plus de ptp4l kernel (port en vfio, PTP dans libmtl) → pmc
+                # ne voit rien. Repli : le grandmaster verrouillé par le PTP interne, relayé par le
+                # contrôleur sur :8080 (champ ptp). Garantit un SDP TX conforme (a=ts-refclk:ptp).
+                refclk = _ptp.refclk_from_engine(ip)
         elif st.get("ptp_enabled"):
             refclk = _ptp.sdp_refclk_lines(_primary_host())   # B1a : hôte du nœud (B1b : par-nœud)
         else:
