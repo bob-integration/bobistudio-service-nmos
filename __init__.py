@@ -2001,9 +2001,23 @@ def repush_subscriptions(vmid):
             pass
         _t.sleep(1)
     n = 0
-    for rid, state in list(_recv_state.items()):
-        if state.get("vmid") != vmid:
-            continue
+    # Source des abonnements : _recv_state (process du SERVICE), avec REPLI sur l'état persisté
+    # (setting nmos_subscriptions). Sans le repli, un deployer_script lancé HORS du process du
+    # service (script d'ops, CLI) recréait le conteneur mais ne repoussait RIEN (_recv_state vide
+    # dans ce process) → moteur muet jusqu'au prochain restart de l'orchestrateur (vu 2026-07-13
+    # au redéploiement du 141). Le persisté est écrit à chaque (dés)activation → à jour.
+    entries = [(rid, st) for rid, st in _recv_state.items() if st.get("vmid") == vmid]
+    if not any(bool((st.get("active") or {}).get("master_enable")) for _, st in entries):
+        import json as _json
+        try:
+            subs = _json.loads(_setting("nmos_subscriptions", "") or "{}") or {}
+        except Exception:
+            subs = {}
+        entries = [(rid, st) for rid, st in subs.items() if st.get("vmid") == vmid]
+        if entries:
+            log.info(f"nmos: repush {vmid} depuis l'état PERSISTÉ "
+                     f"(_recv_state vide dans ce process)")
+    for rid, state in entries:
         active = state.get("active") or {}
         if not bool(active.get("master_enable")):
             continue
