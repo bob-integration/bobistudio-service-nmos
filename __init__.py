@@ -1980,32 +1980,17 @@ def _notify_agent(vmid, recv_idx, essence, enable, sdp, mcast_info):
         db_add_alert(f"NMOS subscription container {vmid} : agent injoignable ({e})", "warning")
 
 
-def repush_subscriptions(vmid):
-    """Re-pousse vers le contrôleur (:8081/nmos/subscribe) TOUS les abonnements RX ACTIFS du
-    container `vmid`. Appelé après une (re)création du conteneur : ses fichiers SDP repartent de
-    zéro, mais `_recv_state` survit en mémoire (l'orchestrateur, lui, ne redémarre pas) → on
-    restaure les sessions RX SANS intervention du contrôleur NMOS externe (corrige la perte des
-    flux à chaque redéploiement). Attend d'abord que l'agent :8081 réponde."""
-    from app.addressing import get_container_ip
-    from app import deploy
-    import time as _t
-    ip = get_container_ip(vmid)
-    if not ip:
-        return 0
-    _aport = deploy.agent_port(vmid)   # :8081 défaut, offsetté (:base+1) pour une sonde probe_2110
-    for _ in range(30):   # readiness agent (le contrôleur met quelques s à (re)démarrer)
-        try:
-            if deploy.agent_session().get(deploy.agent_url(ip, "/status", port=_aport), timeout=2).status_code == 200:
-                break
-        except Exception:
-            pass
-        _t.sleep(1)
-    n = 0
-    # Source des abonnements : _recv_state (process du SERVICE), avec REPLI sur l'état persisté
-    # (setting nmos_subscriptions). Sans le repli, un deployer_script lancé HORS du process du
-    # service (script d'ops, CLI) recréait le conteneur mais ne repoussait RIEN (_recv_state vide
-    # dans ce process) → moteur muet jusqu'au prochain restart de l'orchestrateur (vu 2026-07-13
-    # au redéploiement du 141). Le persisté est écrit à chaque (dés)activation → à jour.
+def subscriptions_actives(vmid):
+    """Abonnements RX ACTIFS (master_enable) que l'ORCHESTRATEUR croit posés sur `vmid` :
+    [(receiver_id, state), …]. Source unique de vérité de « ce que ce moteur DEVRAIT recevoir » —
+    consommée par `repush_subscriptions` (quoi re-pousser) ET par la vérification post-resync /
+    le détecteur permanent de `metrics` (moteur revenu vide après un redéploiement).
+
+    Source : `_recv_state` (process du SERVICE), avec REPLI sur l'état persisté (setting
+    nmos_subscriptions). Sans le repli, un deployer_script lancé HORS du process du service
+    (script d'ops, CLI) recréait le conteneur mais ne repoussait RIEN (_recv_state vide dans ce
+    process) → moteur muet jusqu'au prochain restart de l'orchestrateur (vu 2026-07-13 au
+    redéploiement du 141). Le persisté est écrit à chaque (dés)activation → à jour."""
     entries = [(rid, st) for rid, st in _recv_state.items() if st.get("vmid") == vmid]
     if not any(bool((st.get("active") or {}).get("master_enable")) for _, st in entries):
         import json as _json
@@ -2014,13 +1999,44 @@ def repush_subscriptions(vmid):
         except Exception:
             subs = {}
         entries = [(rid, st) for rid, st in subs.items() if st.get("vmid") == vmid]
-        if entries:
-            log.info(f"nmos: repush {vmid} depuis l'état PERSISTÉ "
-                     f"(_recv_state vide dans ce process)")
+    return [(rid, st) for rid, st in entries
+            if bool((st.get("active") or {}).get("master_enable"))]
+
+
+def nb_sessions_rx_attendues(vmid, essence="video"):
+    """Nombre de sessions RX d'une essence que le moteur `vmid` DEVRAIT servir (abonnements IS-05
+    actifs côté orchestrateur). 0 = rien d'attendu (un moteur vide est alors NORMAL)."""
+    return sum(1 for _, st in subscriptions_actives(vmid)
+               if (st.get("essence") or "video") == essence)
+
+
+def repush_subscriptions(vmid):
+    """Re-pousse vers le contrôleur (:8081/nmos/subscribe) TOUS les abonnements RX ACTIFS du
+    container `vmid`. Appelé après une (re)création du conteneur : ses fichiers SDP repartent de
+    zéro, mais `_recv_state` survit en mémoire (l'orchestrateur, lui, ne redémarre pas) → on
+    restaure les sessions RX SANS intervention du contrôleur NMOS externe (corrige la perte des
+    flux à chaque redéploiement). Attend d'abord que le contrôleur :8081 réponde (readiness
+    BORNÉE PAR UNE ÉCHÉANCE — cf. deploy.attendre_controleur_pret : l'ancienne boucle
+    `for _ in range(30)` + sleep(1) épuisait son budget en ~30 s sur un port fermé, alors qu'un
+    moteur 2110 recréé met 30-60 s à servir :8081 → les subscribes partaient dans le vide et le
+    moteur revenait VIDE, silencieusement).
+
+    Renvoie le nombre d'abonnements POUSSÉS (≠ nombre de sessions réellement créées : la
+    vérification est faite par docker_driver._resync_moteur / metrics)."""
+    from app.addressing import get_container_ip
+    from app import deploy
+    ip = get_container_ip(vmid)
+    if not ip:
+        return 0
+    if not deploy.attendre_controleur_pret(ip, vmid=vmid):
+        from app.database import db_add_alert
+        db_add_alert(f"NMOS {vmid} : contrôleur :8081 injoignable — abonnements RX NON restaurés "
+                     f"(moteur potentiellement VIDE). Redéployer le moteur.", "error")
+        return 0
+    n = 0
+    entries = subscriptions_actives(vmid)
     for rid, state in entries:
         active = state.get("active") or {}
-        if not bool(active.get("master_enable")):
-            continue
         sdp = (active.get("transport_file") or {}).get("data")
         dual = len(active.get("transport_params") or []) >= 2
         mcast_info = _extract_mcast_info(active, smpte_2022_7=dual)
