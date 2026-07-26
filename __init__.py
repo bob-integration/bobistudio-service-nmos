@@ -1028,7 +1028,7 @@ def rebuild_model():
             if sig != _last_mcast_conflict_sig:
                 from app.database import db_add_alert
                 db_add_alert(f"{len(conflicts)} groupe(s) multicast en collision (registre NMOS) : "
-                             f"{', '.join(sorted(conflicts)[:5])}", "warning")
+                             f"{', '.join(sorted(conflicts)[:5])}", "warning", kind="net")
                 _last_mcast_conflict_sig = sig
         else:
             _last_mcast_conflict_sig = ""
@@ -1968,7 +1968,7 @@ def _notify_agent(vmid, recv_idx, essence, enable, sdp, mcast_info):
     ip = get_container_ip(vmid)
     if not ip:
         log.warning(f"nmos: pas d'IP pour container {vmid}, subscription ignorée")
-        db_add_alert(f"NMOS subscription receiver #{recv_idx + 1}/{essence} container {vmid}: IP introuvable", "warning")
+        db_add_alert(f"NMOS subscription receiver #{recv_idx + 1}/{essence} container {vmid}: IP introuvable", "warning", vmid=vmid, kind="rx_stall")
         return
     if isinstance(mcast_info, list):
         # SMPTE 2022-7 : un unique SDP avec deux sections m= (leg0 + leg1)
@@ -2007,15 +2007,15 @@ def _notify_agent(vmid, recv_idx, essence, enable, sdp, mcast_info):
         if r.status_code == 200:
             db_add_alert(
                 f"NMOS receiver #{recv_idx + 1}/{essence} container {vmid} → "
-                f"{'subscribe' if enable else 'unsubscribe'}", "info")
+                f"{'subscribe' if enable else 'unsubscribe'}", "info", vmid=vmid, kind="rx_stall")
         else:
             log.warning(f"nmos: agent {vmid} a renvoyé {r.status_code}")
             db_add_alert(
                 f"NMOS subscription container {vmid} : agent retour {r.status_code}",
-                "warning")
+                "warning", vmid=vmid, kind="agent")
     except Exception as e:
         log.warning(f"nmos: notification agent {vmid} échouée : {e}")
-        db_add_alert(f"NMOS subscription container {vmid} : agent injoignable ({e})", "warning")
+        db_add_alert(f"NMOS subscription container {vmid} : agent injoignable ({e})", "warning", vmid=vmid, kind="agent")
 
 
 def subscriptions_actives(vmid):
@@ -2069,7 +2069,7 @@ def repush_subscriptions(vmid):
     if not deploy.attendre_controleur_pret(ip, vmid=vmid):
         from app.database import db_add_alert
         db_add_alert(f"NMOS {vmid} : contrôleur :8081 injoignable — abonnements RX NON restaurés "
-                     f"(moteur potentiellement VIDE). Redéployer le moteur.", "error")
+                     f"(moteur potentiellement VIDE). Redéployer le moteur.", "error", vmid=vmid, kind="agent")
         return 0
     n = 0
     entries = subscriptions_actives(vmid)
