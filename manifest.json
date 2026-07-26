@@ -22,6 +22,10 @@
       "type": "str",
       "default": ""
     },
+    "nmos_label_prefix": {
+      "type": "str",
+      "default": ""
+    },
     "nmos_mdns_enabled": {
       "type": "bool",
       "default": false
@@ -55,7 +59,7 @@
       "default": 8
     }
   },
-  "version": "0.1.2",
+  "version": "0.1.3",
   "order": 0,
   "description": "Provider NMOS IS-04/IS-05 — enregistrement Node, Devices, Receivers et Senders auprès d'un Registry RDS. Expose les endpoints Connection API IS-05 pour le routage."
 }

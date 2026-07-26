@@ -43,6 +43,28 @@
                 <input type="text" id="s_nmos_node_description" class="wide"></div>
             <button class="btn btn-green" onclick="appliquerNmos()">Appliquer</button>
         </div>
+        <!-- Préfixe des libellés de ressources. Les Rx/Tx s'appellent « Rx 1 (video) », « Tx 1 (anc) »…
+             Le préfixe ne sert qu'à lever une ambiguïté : toutes les ressources du cluster vivent sous
+             UN SEUL Device, et chaque moteur numérote ses slots à partir de 1 → deux nœuds exposent
+             chacun un « Rx 1 ». D'où l'override par nœud juste en dessous. -->
+        <div class="row" style="align-items:flex-end">
+            <div class="field"><label>Préfixe des libellés Rx/Tx</label>
+                <input type="text" id="s_nmos_label_prefix" class="wide" placeholder="(aucun)"></div>
+            <button class="btn btn-green" onclick="appliquerNmos()">Appliquer le préfixe</button>
+            <div class="meta" style="flex:1; min-width:280px">Vide → <code>Rx 1 (video)</code>,
+                <code>Tx 1 (anc)</code>. Avec <code>REGIE-A</code> → <code>REGIE-A Rx 1 (video)</code>.
+                <b>Affichage seul</b> : ne change ni les UUID NMOS, ni les flux MXL, ni les SSRC —
+                aucun abonnement n'est à refaire.</div>
+        </div>
+        <div class="row" style="align-items:flex-start">
+            <div class="field" style="flex:1">
+                <label>Préfixe par nœud <span class="meta">(vide = hérite du global)</span></label>
+                <div id="nmos_prefix_nodes" class="meta">⏳…</div>
+            </div>
+            <div class="meta" style="flex:1; min-width:280px">Indispensable dès qu'un <b>second moteur
+                2110</b> rejoint le cluster : sans préfixe distinct, deux nœuds exposent chacun un
+                « Rx 1 » indiscernable pour un contrôleur tiers.</div>
+        </div>
         <div class="row" style="align-items:flex-end">
             <div class="field"><label>Mode de gestion des ressources</label>
                 <select id="s_nmos_mode" style="min-width:280px">

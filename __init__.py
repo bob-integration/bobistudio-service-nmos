@@ -445,6 +445,30 @@ def _setting(key, default):
     v = db_get_setting(key, None)
     return v if v is not None else default
 
+
+def _prefixe_libelle(node_id=None):
+    """Préfixe des LIBELLÉS NMOS (réglage `nmos_label_prefix`, override par nœud).
+
+    Les libellés étaient construits sur le hostname du conteneur (« mtlrx603 Rx 1 (video) »), ce qui
+    exposait au réseau un identifiant interne dérivé du vmid — lequel est un handle local jetable.
+    Les ressources sont désormais nommées « Rx 1 », « TX 1 2110-20 »… et le préfixe ne sert qu'à
+    lever une ambiguïté quand elle existe.
+
+    ⚠ ELLE EXISTE dès qu'un cluster a PLUSIEURS moteurs : toutes les ressources vivent sous un
+    Device de niveau cluster unique (cf. `_build_cluster_device_resource`), donc deux nœuds
+    numérotent chacun leur « Rx 1 » et un contrôleur tiers voit deux entrées identiques. D'où
+    l'override PAR NŒUD : un site multi-nœuds pose un préfixe distinct par nœud.
+
+    N'affecte QUE l'affichage : ni les UUID (registre `nmos_resources`), ni les noms de flux MXL,
+    ni les SSRC — tous indépendants du libellé. Renommer est donc sans effet sur le câblage."""
+    try:
+        from app.settings import setting_for
+        v = setting_for("nmos_label_prefix", node_id)
+    except Exception:
+        v = _setting("nmos_label_prefix", "")
+    v = (v or "").strip()
+    return f"{v} " if v else ""
+
 _ifb_cache = {}   # vmid → (ts, [ifnames media2110 du nœud, red d'abord]) — évite N requêtes DB par rebuild
 
 def _media_ifaces_of(vmid):
@@ -580,7 +604,10 @@ def rebuild_model():
             continue
         # C2a : toutes les ressources sous le Device cluster stable (plus de device par-vmid).
         did = cluster_did
-        base = c.get("hostname") or f"container {vmid}"
+        # Libellés NMOS : préfixe réglable (vide par défaut) au lieu du hostname du conteneur,
+        # qui exposait « mtlrx<vmid> » — un handle local jetable — aux contrôleurs tiers.
+        _pfx = _prefixe_libelle(c.get("node_id"))
+        base = _pfx.strip() or "2110"
 
         # Nom de bundle d'un ensemble : si plusieurs vidéos sur le container, on
         # suffixe l'index pour distinguer les bundles ; sinon le container = 1 bundle.
@@ -597,7 +624,7 @@ def rebuild_model():
         # Receivers vidéo — un bundle (group_name) par flux vidéo
         for vf in _rx_videos:
             idx = vf["idx"]
-            label = f"{c.get('hostname') or vmid} Rx {idx + 1} (video)"
+            label = f"{_pfx}Rx {idx + 1} (video)"
             rid, label = _registry_id(f"receiver:v:{vmid}:{idx}", instance_uuid, f"v:{idx}", "video",
                                       "receiver", label, {}, _grp_name(idx), "video",
                                       bind_override=nmos_bind.get(f"v:{idx}"), allow_autoseed=allow_autoseed)
@@ -619,7 +646,7 @@ def rebuild_model():
             vi  = _rx_vid_of.get(("audio", idx))
             n   = (_rx_sub_of.get(("audio", idx), 0) or 0) + 1
             grp = _child_grp(vi, "audio", idx)
-            label = f"{c.get('hostname') or vmid} Rx {idx + 1} (audio)"
+            label = f"{_pfx}Rx {idx + 1} (audio)"
             rid, label = _registry_id(f"receiver:a:{vmid}:{idx}", instance_uuid, f"a:{idx}", "audio",
                                       "receiver", label, {}, grp, f"audio {n}",
                                       bind_override=nmos_bind.get(f"a:{idx}"), allow_autoseed=allow_autoseed)
@@ -641,7 +668,7 @@ def rebuild_model():
             vi  = _rx_vid_of.get(("anc", idx))
             n   = (_rx_sub_of.get(("anc", idx), 0) or 0) + 1
             grp = _child_grp(vi, "anc", idx)
-            label = f"{c.get('hostname') or vmid} Rx {idx + 1} (anc)"
+            label = f"{_pfx}Rx {idx + 1} (anc)"
             rid, label = _registry_id(f"receiver:d:{vmid}:{idx}", instance_uuid, f"d:{idx}", "data",
                                       "receiver", label, {}, grp, f"anc {n}",
                                       bind_override=nmos_bind.get(f"d:{idx}"), allow_autoseed=allow_autoseed)
@@ -676,7 +703,7 @@ def rebuild_model():
                 cs, transfer = COLORIMETRY[_colo]["nmos_colorspace"], COLORIMETRY[_colo]["nmos_transfer"]
             else:   # fallback : déduire des color_* ffmpeg si présents, sinon BT709/SDR
                 cs, transfer = nmos_colorimetry(v.get("color_primaries"), v.get("color_trc"))
-            label  = f"{c.get('hostname') or vmid} 2110-20"
+            label  = f"{_pfx}Tx (video)"
             _scan = str(_pp.get("scan") or v.get("scan") or "p")
             _fo   = str(_pp.get("field_order") or v.get("field_order") or "")
             _tr = {"multicast_ip": mcast, "port": port, "width": width, "height": height,
@@ -721,6 +748,12 @@ def rebuild_model():
         # Senders vidéo MOTEUR (slots TX) — un sender NMOS par entrée tx_slots, keyé sur tx_idx.
         # (Additif : sans tx_slots, aucun sender — les receivers/senders existants sont inchangés.)
         for tx_idx, tslot in enumerate(tx_slots):
+            # Slot audio-seul / ANC-seul (marqueur `video_off` posé par io2110_layouts) : PAS de sender
+            # vidéo. Sans ce saut, un slot sans vidéo enregistrait un sender 2110-20 fantôme (défauts
+            # 1280×720 + mcast dérivé) → flux vidéo inexistant annoncé en IS-04. Les senders audio/ANC
+            # de ce slot restent créés par leurs boucles dédiées (gardées sur leur propre mcast).
+            if tslot.get("video_off"):
+                continue
             # Défaut UNIQUE par slot (dérivé de tx_idx ; TX0 = .1 rétro-compat) — jamais la même
             # adresse pour deux slots : activer un slot aux défauts n'écrase plus le flux d'un autre.
             mcast = tslot.get("multicast_ip") or "239.10.10.{}".format((tx_idx % 250) + 1)
@@ -747,12 +780,12 @@ def rebuild_model():
                     _src_fmt = {}
             _scan = str(_src_fmt.get("scan") or dc_params.get("scan") or "p")
             _fo   = str(_src_fmt.get("field_order") or dc_params.get("field_order") or "")
-            label  = f"{c.get('hostname') or vmid} TX{tx_idx + 1} 2110-20"
+            label  = f"{_pfx}Tx {tx_idx + 1} (video)"
             _tr = {"multicast_ip": mcast, "port": port, "width": width, "height": height,
                    "chroma": chroma, "bit_depth": bit_depth, "colorspace": cs, "transfer": transfer,
                    "scan": _scan, "field_order": _fo, "fps": tslot.get("fps")}
             snd_id, label = _registry_id(f"sender:v:{vmid}:tx{tx_idx}", instance_uuid, f"tx{tx_idx}:v",
-                                         "video", "sender", label, _tr, f"{base} TX {tx_idx + 1}", "video",
+                                         "video", "sender", label, _tr, f"{base} Tx {tx_idx + 1}", "video",
                                          bind_override=nmos_bind.get(f"tx{tx_idx}:v"), allow_autoseed=allow_autoseed)
             if snd_id is None:
                 continue
@@ -764,7 +797,7 @@ def rebuild_model():
             new_senders[snd_id] = _build_sender_resource(snd_id, did, fid, vmid, label, version)
             # Groupé PAR SLOT TX (comme les receivers le sont par canal) : vidéo + audio(s)
             # + ANC d'un même slot partagent le group_name, le rôle = essence.
-            _set_grouphint(new_senders[snd_id], f"{base} TX {tx_idx + 1}", "video")
+            _set_grouphint(new_senders[snd_id], f"{base} Tx {tx_idx + 1}", "video")
             new_devices[did]["senders"].append(snd_id)
             smpte_v = bool(tslot.get("smpte_2022_7") or dc_params.get("smpte_2022_7"))
             mcast1_v = tslot.get("multicast_ip_leg1")
@@ -800,7 +833,7 @@ def rebuild_model():
             # Défaut UNIQUE par flux audio (a_idx 0 = .1 rétro-compat).
             mcast = a.get("multicast_ip") or "239.10.20.{}".format((a_idx % 250) + 1)
             port  = int(a.get("dest_port") or (5004 + 2 * a_idx))
-            label  = f"{c.get('hostname') or vmid} 2110-30 #{a_idx + 1}"
+            label  = f"{_pfx}Tx (audio {a_idx + 1})"
             snd_id, label = _registry_id(f"sender:a:{vmid}:{a_idx}", instance_uuid, f"a:{a_idx}", "audio",
                                          "sender", label, {"multicast_ip": mcast, "port": port}, base, f"audio {a_idx + 1}",
                                          bind_override=nmos_bind.get(f"a:{a_idx}"), allow_autoseed=allow_autoseed)
@@ -838,11 +871,11 @@ def rebuild_model():
                 if not mcast:
                     continue
                 port   = int(acfg.get("dest_port") or 0)
-                label  = f"{c.get('hostname') or vmid} TX{tx_idx + 1} 2110-30 #{ai + 1}"
+                label  = f"{_pfx}Tx {tx_idx + 1} (audio {ai + 1})"
                 snd_id, label = _registry_id(f"sender:a:{vmid}:tx{tx_idx}:{ai}", instance_uuid,
                                              f"tx{tx_idx}:a{ai}", "audio", "sender", label,
                                              {"multicast_ip": mcast, "port": port},
-                                             f"{base} TX {tx_idx + 1}", f"audio {ai + 1}",
+                                             f"{base} Tx {tx_idx + 1}", f"audio {ai + 1}",
                                              bind_override=nmos_bind.get(f"tx{tx_idx}:a{ai}"), allow_autoseed=allow_autoseed)
                 if snd_id is None:
                     continue
@@ -851,7 +884,7 @@ def rebuild_model():
                 new_sources[src_id] = _build_audio_source_resource(src_id, did, vmid, label, version)
                 new_flows[fid]      = _build_audio_flow_resource(fid, did, src_id, vmid, label, version)
                 new_senders[snd_id] = _build_sender_resource(snd_id, did, fid, vmid, label, version)
-                _set_grouphint(new_senders[snd_id], f"{base} TX {tx_idx + 1}", f"audio {ai + 1}")
+                _set_grouphint(new_senders[snd_id], f"{base} Tx {tx_idx + 1}", f"audio {ai + 1}")
                 new_devices[did]["senders"].append(snd_id)
                 smpte_a = bool(tslot.get("smpte_2022_7") or dc_params.get("smpte_2022_7"))
                 mcast1_a = acfg.get("multicast_ip_leg1")
@@ -882,10 +915,10 @@ def rebuild_model():
             if not mcast:
                 continue
             port = int(tslot.get("anc_dest_port") or 0)
-            label  = f"{c.get('hostname') or vmid} TX{tx_idx + 1} 2110-40"
+            label  = f"{_pfx}Tx {tx_idx + 1} (anc)"
             snd_id, label = _registry_id(f"sender:d:{vmid}:tx{tx_idx}", instance_uuid, f"tx{tx_idx}:d",
                                          "data", "sender", label, {"multicast_ip": mcast, "port": port},
-                                         f"{base} TX {tx_idx + 1}", "anc",
+                                         f"{base} Tx {tx_idx + 1}", "anc",
                                          bind_override=nmos_bind.get(f"tx{tx_idx}:d"), allow_autoseed=allow_autoseed)
             if snd_id is None:
                 continue
@@ -894,7 +927,7 @@ def rebuild_model():
             new_sources[src_id] = _build_data_source_resource(src_id, did, vmid, label, version)
             new_flows[fid]      = _build_data_flow_resource(fid, did, src_id, vmid, label, version)
             new_senders[snd_id] = _build_sender_resource(snd_id, did, fid, vmid, label, version)
-            _set_grouphint(new_senders[snd_id], f"{base} TX {tx_idx + 1}", "anc")
+            _set_grouphint(new_senders[snd_id], f"{base} Tx {tx_idx + 1}", "anc")
             new_devices[did]["senders"].append(snd_id)
             smpte_d = bool(tslot.get("smpte_2022_7") or dc_params.get("smpte_2022_7"))
             mcast1_d = tslot.get("anc_multicast_ip_leg1")
@@ -1249,7 +1282,8 @@ def _container_slot_keys(params, kind):
         n_tx = min(int(atc if atc is not None else len(tx_full)), len(tx_full))
         for i in range(n_tx):
             ts = tx_full[i] or {}
-            out["video"].append(f"tx{i}:v")
+            if not ts.get("video_off"):           # slot audio-seul / ANC-seul : pas de clé vidéo
+                out["video"].append(f"tx{i}:v")
             # Plus de cap à 2 : autant de clés audio que de flux audio attachés au slot.
             for ai, acfg in enumerate(ts.get("audios") or []):
                 if (acfg or {}).get("multicast_ip"):
@@ -2512,6 +2546,7 @@ def register_routes(bp):
         st["enabled_setting"]        = bool(db_get_setting("nmos_enabled", False))
         st["registry_url_setting"]   = db_get_setting("nmos_registry_url", "") or ""
         st["node_label_setting"]     = db_get_setting("nmos_node_label", "Bobi.Studio")
+        st["label_prefix_setting"]   = db_get_setting("nmos_label_prefix", "")
         st["node_description_setting"] = db_get_setting("nmos_node_description", "")
         st["mdns_enabled_setting"]   = bool(db_get_setting("nmos_mdns_enabled", False))
         st["auto_activate_senders_setting"] = bool(db_get_setting("nmos_auto_activate_senders", False))
@@ -2534,6 +2569,9 @@ def register_routes(bp):
         db_set_setting("nmos_registry_url",     registry)
         db_set_setting("nmos_node_label",       label)
         db_set_setting("nmos_node_description", desc)
+        # Préfixe des libellés Rx/Tx (affichage seul ; override par nœud via /api/settings/node).
+        if "label_prefix" in data:
+            db_set_setting("nmos_label_prefix", (data.get("label_prefix") or "").strip())
         db_set_setting("nmos_mdns_enabled",     mdns)
         db_set_setting("nmos_auto_activate_senders", auto_act)
         db_set_setting("nmos_sdp_source_filter", sdp_sf)
