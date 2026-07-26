@@ -1998,8 +1998,12 @@ def _notify_agent(vmid, recv_idx, essence, enable, sdp, mcast_info):
         # Port du contrat agent : :8081 par défaut, offsetté (:base+1) pour une sonde probe_2110
         # coexistant avec un moteur sur le même nœud (--network host, cf. controller_port_base).
         _aport = deploy.agent_port(vmid)
+        # En-tête d'auth OBLIGATOIRE : depuis que MXL_AGENT_TOKEN est réellement injecté au
+        # `docker run`, un agent sous token répond 401 sans lui. Inoffensif aujourd'hui — cette
+        # route vise le contrôleur du moteur 2110, qui ne lit pas encore le token — mais l'oublier
+        # ferait casser TOUS les abonnements NMOS le jour où l'image l'implémentera.
         r = deploy.agent_session().post(deploy.agent_url(ip, "/nmos/subscribe", port=_aport),
-                          json=payload, timeout=5)
+                          json=payload, timeout=5, headers=deploy.agent_headers(vmid))
         if r.status_code == 200:
             db_add_alert(
                 f"NMOS receiver #{recv_idx + 1}/{essence} container {vmid} → "
