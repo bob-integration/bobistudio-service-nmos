@@ -2005,13 +2005,15 @@ def _notify_agent(vmid, recv_idx, essence, enable, sdp, mcast_info):
         r = deploy.agent_session().post(deploy.agent_url(ip, "/nmos/subscribe", port=_aport),
                           json=payload, timeout=5, headers=deploy.agent_headers(vmid))
         if r.status_code == 200:
-            # SUCCÈS = trace d'exploitation, PAS une alarme. Postée dans `alerts`, elle y arrivait
-            # par rafales (36 receivers ré-abonnés d'un coup = 36 lignes ; 36 à 109/h mesurés sur
-            # Horace, 290 lignes `info` sur 1096 = 27 % du fil). Or `alerts` est plafonnée à 1000
-            # lignes : ce bruit ÉVINCE les vraies alertes en moins d'une journée. Le fil de
-            # l'exploitant ne contient que ce sur quoi il doit agir — le reste va au log.
-            log.info("nmos: receiver #%s/%s container %s → %s",
-                     recv_idx + 1, essence, vmid, "subscribe" if enable else "unsubscribe")
+            # Le fil `alerts` est AUSSI le journal d'exploitation (décision 2026-07-27) : une
+            # (dés)inscription doit y rester visible, en `info`. Quand elle vient d'une action
+            # utilisateur, `db_add_alert` y attache l'acteur tout seul (contexte de requête) ;
+            # les rafales de la réconciliation automatique du moteur restent anonymes = machine.
+            # C'est la rétention qui a été portée à 10 000 lignes pour que ce journal serve à
+            # quelque chose, pas le volume qui a été coupé.
+            db_add_alert(
+                f"NMOS receiver #{recv_idx + 1}/{essence} container {vmid} → "
+                f"{'subscribe' if enable else 'unsubscribe'}", "info", vmid=vmid, kind="rx_stall")
         else:
             log.warning(f"nmos: agent {vmid} a renvoyé {r.status_code}")
             db_add_alert(
