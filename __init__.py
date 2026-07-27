@@ -2005,9 +2005,13 @@ def _notify_agent(vmid, recv_idx, essence, enable, sdp, mcast_info):
         r = deploy.agent_session().post(deploy.agent_url(ip, "/nmos/subscribe", port=_aport),
                           json=payload, timeout=5, headers=deploy.agent_headers(vmid))
         if r.status_code == 200:
-            db_add_alert(
-                f"NMOS receiver #{recv_idx + 1}/{essence} container {vmid} → "
-                f"{'subscribe' if enable else 'unsubscribe'}", "info", vmid=vmid, kind="rx_stall")
+            # SUCCÈS = trace d'exploitation, PAS une alarme. Postée dans `alerts`, elle y arrivait
+            # par rafales (36 receivers ré-abonnés d'un coup = 36 lignes ; 36 à 109/h mesurés sur
+            # Horace, 290 lignes `info` sur 1096 = 27 % du fil). Or `alerts` est plafonnée à 1000
+            # lignes : ce bruit ÉVINCE les vraies alertes en moins d'une journée. Le fil de
+            # l'exploitant ne contient que ce sur quoi il doit agir — le reste va au log.
+            log.info("nmos: receiver #%s/%s container %s → %s",
+                     recv_idx + 1, essence, vmid, "subscribe" if enable else "unsubscribe")
         else:
             log.warning(f"nmos: agent {vmid} a renvoyé {r.status_code}")
             db_add_alert(
