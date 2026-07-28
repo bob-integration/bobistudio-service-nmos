@@ -1876,7 +1876,21 @@ def _propagate_sdp_format(vmid, sdp, recv_idx=None, slot_only=False):
     # `slot_only` (repropagation au boot) : ne TOUCHE PAS le format global (width/height/scan) du
     # container — il pourrait, en bouclant sur N flux, basculer le scan global (utilisé p.ex. côté
     # TX). On ne fait qu'enrichir rx_fmt par-flux.
-    write_global = global_changed and not slot_only
+    # ★ Sur un moteur à PLUSIEURS entrées vidéo, le format « global » ne décrit AUCUN flux en
+    # particulier — et le laisser suivre le dernier récepteur activé le rend non déterministe : un
+    # resync qui réabonne six entrées dont la dernière est 1080i50 fait basculer tout le container à
+    # 25 fps « i ». Le 2026-07-27, `docker_driver._auto_lcores` s'y fiait et a dimensionné le moteur
+    # pour la moitié du débit réel : sessions refusées, six RX mortes. Le garde `slot_only` existait
+    # déjà pour la repropagation au boot, avec exactement ce motif — il manquait au chemin normal.
+    # Mono-flux : le global EST ce flux, aucune ambiguïté, on garde le comportement historique.
+    _multi = False
+    try:
+        from app import io2110_flows as _iof
+        _multi = len([f for f in _iof.active_flows(params, "rx")
+                      if f.get("essence") == "video"]) > 1
+    except Exception as _e:
+        log.debug("nmos: comptage des flux RX vidéo (vmid=%s) : %s", vmid, _e)
+    write_global = global_changed and not slot_only and not _multi
     if not (write_global or slot_changed):
         return
     if write_global:
