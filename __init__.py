@@ -338,6 +338,11 @@ def _registry_id(current_seed, instance_uuid, slot_key, essence, kind,
     eff_label = ex["label"] if (ex and ex.get("label_locked")) else label
     db_nmos_resource_upsert(rid, kind, essence, eff_label, group_name, role,
                             transport or {}, instance_uuid, slot_key)
+    # Grouping IMMUABLE : la valeur du registre fait foi dès qu'elle existe (l'upsert ci-dessus ne
+    # l'écrase plus). On la relaie à `_set_grouphint` par `_grouphint_fige` plutôt que par un
+    # troisième retour, pour ne pas changer la signature sur la quinzaine d'appelants.
+    _grouphint_fige[rid] = ((ex.get("group_name") or group_name) if ex else group_name,
+                            (ex.get("role") or role) if ex else role)
     return rid, eff_label
 
 def _build_cluster_device_resource(did, version):
@@ -349,16 +354,84 @@ def _build_cluster_device_resource(did, version):
         "version": version,
         "label": _setting("nmos_cluster_label", "Bobi.Studio 2110 I/O"),
         "description": "Cluster 2110 I/O — ressources stables, conteneurs bindés via instance_uuid",
-        "tags": {},
+        "tags": _asset_tags(avec_fonction=True),      # BCP-002-02 (Device : + fonction)
         "type": "urn:x-nmos:device:generic",
         "node_id": _state["node_id"],
         "senders": [],
         "receivers": [],
-        "controls": [{
-            "href": f"http://{_get_host_address()}:5000/x-nmos/connection/{IS05_VERSION}/",
-            "type": f"urn:x-nmos:control:sr-ctrl/{IS05_VERSION}",
-        }],
+        "controls": _controls(),
     }
+
+
+# ─── BCP-002-02 : information distinctive d'asset ────────────────────────────────────────────
+# Le problème que la BCP décrit mot pour mot : une requête IS-04 rend plusieurs Nodes au même
+# libellé, et l'ingénieur d'exploitation n'a aucun moyen de savoir lequel est lequel. Trois tags
+# sur le Node ET le Device (exactement une valeur chacun), plus la FONCTION sur le Device.
+TAG_MANUFACTURER = "urn:x-nmos:tag:asset:manufacturer/v1.0"
+TAG_PRODUCT      = "urn:x-nmos:tag:asset:product/v1.0"
+TAG_INSTANCE_ID  = "urn:x-nmos:tag:asset:instance-id/v1.0"
+TAG_FUNCTION     = "urn:x-nmos:tag:asset:function/v1.0"
+
+ASSET_MANUFACTURER_DEFAUT = "BOBI SAS"
+ASSET_PRODUCT_DEFAUT      = "Bobi.Studio"
+ASSET_FUNCTION_DEFAUT     = "Gateway"
+
+
+def asset_info():
+    """Identité de l'asset — SOURCE UNIQUE, partagée par IS-04 (tags BCP-002-02) et IS-12
+    (`NcDeviceManager`, propriétés `manufacturer`/`product`/`serialNumber`).
+
+    Les deux protocoles publient la même information à des contrôleurs qui peuvent lire les deux :
+    les servir depuis deux endroits, c'est se garantir qu'ils finiront par se contredire.
+
+    `instance_id` = l'UUID de Node déjà persisté (`nmos_node_uuid`) : identifiant d'instance stable,
+    unique par installation, et qui ne demande rien de plus à l'exploitant. La BCP exige que le
+    triplet (fabricant, produit, instance) soit unique parmi les Nodes et parmi les Devices — il
+    l'est par construction, et elle autorise explicitement le Device à partager celui de son Node."""
+    return {
+        "manufacturer": _setting("nmos_asset_manufacturer", ASSET_MANUFACTURER_DEFAUT)
+                        or ASSET_MANUFACTURER_DEFAUT,
+        "product":      _setting("nmos_asset_product", ASSET_PRODUCT_DEFAUT) or ASSET_PRODUCT_DEFAUT,
+        "instance_id":  _get_node_id(),
+        "function":     _setting("nmos_asset_function", ASSET_FUNCTION_DEFAUT)
+                        or ASSET_FUNCTION_DEFAUT,
+    }
+
+
+def _asset_tags(avec_fonction=False, base=None):
+    """Tags BCP-002-02 fusionnés dans `base` (tags déjà présents sur la ressource)."""
+    a = asset_info()
+    tags = dict(base or {})
+    tags[TAG_MANUFACTURER] = [a["manufacturer"]]
+    tags[TAG_PRODUCT]      = [a["product"]]
+    tags[TAG_INSTANCE_ID]  = [a["instance_id"]]
+    if avec_fonction:
+        tags[TAG_FUNCTION] = [a["function"]]
+    return tags
+
+
+def _controls():
+    """Tableau `controls` d'un Device IS-04 : la Connection API IS-05, plus le point d'accès
+    IS-12 quand il tourne. C'est par là — et seulement par là — qu'un contrôleur découvre le
+    protocole de contrôle (IS-12 §« IS-04 interactions »)."""
+    ctrl = [{
+        "href": f"http://{_get_host_address()}:5000/x-nmos/connection/{IS05_VERSION}/",
+        "type": f"urn:x-nmos:control:sr-ctrl/{IS05_VERSION}",
+    }]
+    try:
+        from . import is12
+        if is12.actif():
+            ctrl.append({"href": is12.href(), "type": is12.TYPE_CONTROL})
+    except Exception as e:
+        log.debug("nmos: control IS-12 non annoncé (%s)", e)
+    try:
+        from . import is14
+        if is14.actif():
+            ctrl.append({"href": is14.href(), "type": is14.TYPE_CONTROL})
+    except Exception as e:
+        log.debug("nmos: control IS-14 non annoncé (%s)", e)
+    return ctrl
+
 
 def _build_orphan_resources(row, version, did):
     """C2b : reconstruit une ressource NMOS INACTIVE depuis une ligne du registre dont aucun conteneur
@@ -402,15 +475,12 @@ def _build_device_resource(did, vmid, hostname, version):
         "version": version,
         "label": hostname or f"container_{vmid}",
         "description": f"Container VMID {vmid}",
-        "tags": {"urn:x-mxl:vmid": [str(vmid)]},
+        "tags": _asset_tags(avec_fonction=True, base={"urn:x-mxl:vmid": [str(vmid)]}),
         "type": "urn:x-nmos:device:generic",
         "node_id": _state["node_id"],
         "senders": [],     # Phase 2 : peuplé pour les workers 2110_sender
         "receivers": [],
-        "controls": [{
-            "href": f"http://{_get_host_address()}:5000/x-nmos/connection/{IS05_VERSION}/",
-            "type": f"urn:x-nmos:control:sr-ctrl/{IS05_VERSION}",
-        }],
+        "controls": _controls(),
     }
 
 def _build_node_resource(version):
@@ -420,7 +490,7 @@ def _build_node_resource(version):
         "version": version,
         "label": _setting("nmos_node_label", "MXL Orchestrator"),
         "description": _setting("nmos_node_description", "Bobi.Studio — provider NMOS centralisé"),
-        "tags": {},
+        "tags": _asset_tags(),                         # BCP-002-02 (Node : sans fonction)
         "href": f"http://{host}:5000/",
         "hostname": socket.gethostname(),
         "api": {
@@ -534,10 +604,95 @@ def _set_grouphint(resource, group_name, role):
     """Pose le tag de natural grouping BCP-002-01 sur une ressource sender/receiver.
     Format : '<group-name>:<role-in-group>' (scope device par défaut). Le ':' est
     réservé comme séparateur → on le bannit des noms/rôles. Un bundle = même
-    group_name sur le même device ; les contrôleurs NMOS regroupent dessus."""
-    gn = str(group_name).replace(":", " ")
-    rl = str(role).replace(":", " ")
+    group_name sur le même device ; les contrôleurs NMOS regroupent dessus.
+
+    ★ La valeur FIGÉE au registre l'emporte sur celle qu'on vient de recalculer (cf.
+    `db_nmos_resource_upsert`) : le grouphint est immuable, et `_registry_id` a déposé la valeur
+    d'origine dans `_grouphint_fige` juste avant. Les valeurs passées en argument ne servent que
+    pour une ressource hors registre (orpheline reconstruite, où elles VIENNENT du registre)."""
+    gn, rl = _grouphint_fige.get(resource.get("id"), (group_name, role))
+    gn = str(gn).replace(":", " ")
+    rl = str(rl).replace(":", " ")
     resource.setdefault("tags", {})[GROUPHINT_TAG] = [f"{gn}:{rl}"]
+
+
+# Valeurs de grouping figées, relevées au registre par `_registry_id` pendant le rebuild courant.
+# {id de ressource → (group_name, role)}. Vidé à chaque rebuild : c'est un relais interne à la
+# passe, pas un cache (le registre reste la seule source de vérité).
+_grouphint_fige = {}
+
+_RE_DERNIER_NOMBRE = re.compile(r"(\d+)(?!.*\d)", re.S)
+
+
+def pad_index(texte):
+    """Complète le DERNIER nombre d'un libellé de groupe/rôle sur deux chiffres.
+
+    Le registre NMOS RECOMMANDE des noms et des rôles triables alphanumériquement (son exemple :
+    « SDI 09 », « SDI 10 », « SDI 11 »). Sans ça un contrôleur affiche « 2110 1, 2110 10, 2110 11,
+    2110 2 » — l'ordre du dictionnaire, pas celui de la régie.
+
+    Seul le DERNIER nombre est touché, et jamais un nombre déjà à deux chiffres ou plus : l'index
+    que nous générons est toujours en fin de chaîne (« 2110 Tx 1 », « audio 3 »), tandis que le
+    préfixe de l'exploitant, lui, ne doit pas être réécrit — « STUDIO 2 » reste « STUDIO 2 »."""
+    s = str(texte)
+    m = _RE_DERNIER_NOMBRE.search(s)
+    if not m or len(m.group(1)) >= 2:
+        return s
+    return s[:m.start(1)] + m.group(1).zfill(2) + s[m.end(1):]
+
+def normaliser_grouping_registre():
+    """Complète sur deux chiffres les index des `group_name`/`role` déjà au registre.
+
+    RUPTURE ASSUMÉE, EN UNE FOIS. Les grouphints sont désormais immuables (cf.
+    `db_nmos_resource_upsert`) : ils ne bougeront plus jamais tout seuls. Mais ceux déjà écrits
+    sont non triables (« 2110 1, 2110 10, 2110 11, 2110 2 »), et les figer tels quels aurait gravé
+    ce défaut pour de bon. On les normalise donc une dernière fois, ici, explicitement.
+
+    Idempotent : compléter un index déjà à deux chiffres ne fait rien. Tourne au démarrage du
+    service, avant le premier rebuild — jamais dans le chemin d'un rebuild.
+
+    ⚠ CONSERVATRICE, et il le faut. Compléter le dernier nombre d'une chaîne à l'aveugle réécrirait
+    aussi le préfixe de l'exploitant : « REGIE 1 » (préfixe seul, cas d'un conteneur à une vidéo)
+    deviendrait « REGIE 01 » — on aurait renommé SON texte, définitivement, puisque la valeur est
+    figée juste après. On ne complète donc QUE les familles : un radical (le texte avant le nombre
+    final) qui porte AU MOINS DEUX index distincts dans le registre. C'est exactement le cas où le
+    tri a un sens ; un groupe seul n'a rien à trier, et son nombre appartient à l'exploitant."""
+    from app.database import db_nmos_resources, db_nmos_resource_set_group
+    lignes = db_nmos_resources() or []
+
+    def _radical(v):
+        """(radical, index) si la chaîne finit par un nombre, sinon (None, None)."""
+        m = _RE_DERNIER_NOMBRE.search(str(v or ""))
+        return (str(v)[:m.start(1)], m.group(1)) if m else (None, None)
+
+    # La prudence ne vaut que pour `group_name` : c'est LUI qui contient le préfixe de l'exploitant.
+    # Un `role` est à nous de bout en bout (« video », « audio N », « anc N ») — c'est même
+    # l'exemple que donne le registre pour le tri (« audio 09 », « audio 10 ») — et sa famille est
+    # souvent de taille 1 (un seul flux audio par groupe), ce qui ferait rater la règle ci-dessous.
+    familles = {}
+    for r in lignes:
+        rad, idx = _radical(r.get("group_name"))
+        if rad is not None:
+            familles.setdefault(rad, set()).add(idx)
+
+    def _completer_groupe(v):
+        rad, _ = _radical(v)
+        if rad is None or len(familles.get(rad, ())) < 2:
+            return v
+        return pad_index(v)
+
+    n = 0
+    for r in lignes:
+        gn, rl = r.get("group_name") or "", r.get("role") or ""
+        gn2, rl2 = _completer_groupe(gn), pad_index(rl)
+        if (gn2, rl2) != (gn, rl):
+            db_nmos_resource_set_group(r["id"], gn2, rl2)
+            n += 1
+    if n:
+        log.info("nmos: %d grouphints normalisés (index sur deux chiffres, BCP-002-01) — "
+                 "rupture unique, ils sont immuables à partir de maintenant", n)
+    return n
+
 
 def rebuild_model():
     """Reconstruit la liste des devices / receivers / senders / sources / flows
@@ -549,6 +704,7 @@ def rebuild_model():
     n_video) ; côté sender (≤1 vidéo) tout le container forme un seul bundle."""
     from app.database import db_get_containers
     version = _tai_version()
+    _grouphint_fige.clear()          # relais interne à CETTE passe (cf. _set_grouphint)
     new_devices = {}
     new_receivers = {}
     new_senders = {}
@@ -612,14 +768,14 @@ def rebuild_model():
         # Nom de bundle d'un ensemble : si plusieurs vidéos sur le container, on
         # suffixe l'index pour distinguer les bundles ; sinon le container = 1 bundle.
         def _grp_name(group_idx):
-            return f"{base} {group_idx + 1}" if n_video > 1 else base
+            return f"{base} {group_idx + 1:02d}" if n_video > 1 else base
 
         # Groupe d'un flux audio/ANC : celui de SA vidéo attachée (câblage groupé) ; un flux
         # INDÉPENDANT (attached_to=None → video_idx None) forme son propre bundle.
         def _child_grp(video_idx, essence, idx):
             if video_idx is not None:
                 return _grp_name(video_idx)
-            return f"{base} · {'audio' if essence == 'audio' else 'anc'} {idx + 1}"
+            return f"{base} · {'audio' if essence == 'audio' else 'anc'} {idx + 1:02d}"
 
         # Receivers vidéo — un bundle (group_name) par flux vidéo
         for vf in _rx_videos:
@@ -648,12 +804,12 @@ def rebuild_model():
             grp = _child_grp(vi, "audio", idx)
             label = f"{_pfx}Rx {idx + 1} (audio)"
             rid, label = _registry_id(f"receiver:a:{vmid}:{idx}", instance_uuid, f"a:{idx}", "audio",
-                                      "receiver", label, {}, grp, f"audio {n}",
+                                      "receiver", label, {}, grp, f"audio {n:02d}",
                                       bind_override=nmos_bind.get(f"a:{idx}"), allow_autoseed=allow_autoseed)
             if rid is None:
                 continue
             new_receivers[rid] = _build_receiver_resource(rid, did, vmid, idx, label, version, fmt="audio", legs=n_legs)
-            _set_grouphint(new_receivers[rid], grp, f"audio {n}")
+            _set_grouphint(new_receivers[rid], grp, f"audio {n:02d}")
             new_devices[did]["receivers"].append(rid)
             cur = _recv_state.get(rid)
             if not cur or len(cur["staged"]["transport_params"]) != n_legs:
@@ -670,12 +826,12 @@ def rebuild_model():
             grp = _child_grp(vi, "anc", idx)
             label = f"{_pfx}Rx {idx + 1} (anc)"
             rid, label = _registry_id(f"receiver:d:{vmid}:{idx}", instance_uuid, f"d:{idx}", "data",
-                                      "receiver", label, {}, grp, f"anc {n}",
+                                      "receiver", label, {}, grp, f"anc {n:02d}",
                                       bind_override=nmos_bind.get(f"d:{idx}"), allow_autoseed=allow_autoseed)
             if rid is None:
                 continue
             new_receivers[rid] = _build_receiver_resource(rid, did, vmid, idx, label, version, fmt="data", legs=n_legs)
-            _set_grouphint(new_receivers[rid], grp, f"anc {n}")
+            _set_grouphint(new_receivers[rid], grp, f"anc {n:02d}")
             new_devices[did]["receivers"].append(rid)
             cur = _recv_state.get(rid)
             if not cur or len(cur["staged"]["transport_params"]) != n_legs:
@@ -785,7 +941,7 @@ def rebuild_model():
                    "chroma": chroma, "bit_depth": bit_depth, "colorspace": cs, "transfer": transfer,
                    "scan": _scan, "field_order": _fo, "fps": tslot.get("fps")}
             snd_id, label = _registry_id(f"sender:v:{vmid}:tx{tx_idx}", instance_uuid, f"tx{tx_idx}:v",
-                                         "video", "sender", label, _tr, f"{base} Tx {tx_idx + 1}", "video",
+                                         "video", "sender", label, _tr, f"{base} Tx {tx_idx + 1:02d}", "video",
                                          bind_override=nmos_bind.get(f"tx{tx_idx}:v"), allow_autoseed=allow_autoseed)
             if snd_id is None:
                 continue
@@ -797,7 +953,7 @@ def rebuild_model():
             new_senders[snd_id] = _build_sender_resource(snd_id, did, fid, vmid, label, version)
             # Groupé PAR SLOT TX (comme les receivers le sont par canal) : vidéo + audio(s)
             # + ANC d'un même slot partagent le group_name, le rôle = essence.
-            _set_grouphint(new_senders[snd_id], f"{base} Tx {tx_idx + 1}", "video")
+            _set_grouphint(new_senders[snd_id], f"{base} Tx {tx_idx + 1:02d}", "video")
             new_devices[did]["senders"].append(snd_id)
             smpte_v = bool(tslot.get("smpte_2022_7") or dc_params.get("smpte_2022_7"))
             mcast1_v = tslot.get("multicast_ip_leg1")
@@ -835,7 +991,7 @@ def rebuild_model():
             port  = int(a.get("dest_port") or (5004 + 2 * a_idx))
             label  = f"{_pfx}Tx (audio {a_idx + 1})"
             snd_id, label = _registry_id(f"sender:a:{vmid}:{a_idx}", instance_uuid, f"a:{a_idx}", "audio",
-                                         "sender", label, {"multicast_ip": mcast, "port": port}, base, f"audio {a_idx + 1}",
+                                         "sender", label, {"multicast_ip": mcast, "port": port}, base, f"audio {a_idx + 1:02d}",
                                          bind_override=nmos_bind.get(f"a:{a_idx}"), allow_autoseed=allow_autoseed)
             if snd_id is None:
                 continue
@@ -844,7 +1000,7 @@ def rebuild_model():
             new_sources[src_id] = _build_audio_source_resource(src_id, did, vmid, label, version)
             new_flows[fid]      = _build_audio_flow_resource(fid, did, src_id, vmid, label, version)
             new_senders[snd_id] = _build_sender_resource(snd_id, did, fid, vmid, label, version)
-            _set_grouphint(new_senders[snd_id], base, f"audio {a_idx + 1}")
+            _set_grouphint(new_senders[snd_id], base, f"audio {a_idx + 1:02d}")
             new_devices[did]["senders"].append(snd_id)
             smpte_2022_7_a = bool(a.get("smpte_2022_7"))
             mcast1_a = a.get("multicast_ip_leg1")
@@ -875,7 +1031,7 @@ def rebuild_model():
                 snd_id, label = _registry_id(f"sender:a:{vmid}:tx{tx_idx}:{ai}", instance_uuid,
                                              f"tx{tx_idx}:a{ai}", "audio", "sender", label,
                                              {"multicast_ip": mcast, "port": port},
-                                             f"{base} Tx {tx_idx + 1}", f"audio {ai + 1}",
+                                             f"{base} Tx {tx_idx + 1:02d}", f"audio {ai + 1:02d}",
                                              bind_override=nmos_bind.get(f"tx{tx_idx}:a{ai}"), allow_autoseed=allow_autoseed)
                 if snd_id is None:
                     continue
@@ -884,7 +1040,7 @@ def rebuild_model():
                 new_sources[src_id] = _build_audio_source_resource(src_id, did, vmid, label, version)
                 new_flows[fid]      = _build_audio_flow_resource(fid, did, src_id, vmid, label, version)
                 new_senders[snd_id] = _build_sender_resource(snd_id, did, fid, vmid, label, version)
-                _set_grouphint(new_senders[snd_id], f"{base} Tx {tx_idx + 1}", f"audio {ai + 1}")
+                _set_grouphint(new_senders[snd_id], f"{base} Tx {tx_idx + 1:02d}", f"audio {ai + 1:02d}")
                 new_devices[did]["senders"].append(snd_id)
                 smpte_a = bool(tslot.get("smpte_2022_7") or dc_params.get("smpte_2022_7"))
                 mcast1_a = acfg.get("multicast_ip_leg1")
@@ -918,7 +1074,7 @@ def rebuild_model():
             label  = f"{_pfx}Tx {tx_idx + 1} (anc)"
             snd_id, label = _registry_id(f"sender:d:{vmid}:tx{tx_idx}", instance_uuid, f"tx{tx_idx}:d",
                                          "data", "sender", label, {"multicast_ip": mcast, "port": port},
-                                         f"{base} Tx {tx_idx + 1}", "anc",
+                                         f"{base} Tx {tx_idx + 1:02d}", "anc",
                                          bind_override=nmos_bind.get(f"tx{tx_idx}:d"), allow_autoseed=allow_autoseed)
             if snd_id is None:
                 continue
@@ -927,7 +1083,7 @@ def rebuild_model():
             new_sources[src_id] = _build_data_source_resource(src_id, did, vmid, label, version)
             new_flows[fid]      = _build_data_flow_resource(fid, did, src_id, vmid, label, version)
             new_senders[snd_id] = _build_sender_resource(snd_id, did, fid, vmid, label, version)
-            _set_grouphint(new_senders[snd_id], f"{base} Tx {tx_idx + 1}", "anc")
+            _set_grouphint(new_senders[snd_id], f"{base} Tx {tx_idx + 1:02d}", "anc")
             new_devices[did]["senders"].append(snd_id)
             smpte_d = bool(tslot.get("smpte_2022_7") or dc_params.get("smpte_2022_7"))
             mcast1_d = tslot.get("anc_multicast_ip_leg1")
@@ -1034,6 +1190,17 @@ def rebuild_model():
             _last_mcast_conflict_sig = ""
     except Exception:
         pass
+
+    # Le modèle IS-12 suit le modèle IS-04 : un receiver qui apparaît/disparaît fait
+    # apparaître/disparaître son monitor BCP-008. Best-effort — le provider IS-04/05 n'a pas à
+    # tomber parce que la supervision a hoqueté.
+    try:
+        from . import is12
+        if is12.actif():
+            is12.sync_model()
+    except Exception as e:
+        log.warning("nmos: synchronisation du modèle IS-12 échouée : %s", e)
+
 
 def _get_recv_count_for_vmid(vmid):
     from app.database import db_get_container
@@ -2317,6 +2484,29 @@ def start(registry_url):
     stop()
     _state["node_id"] = _get_node_id()
     _state["registry_url"] = (registry_url or "").rstrip("/") or None
+    # Normalisation unique des index de grouping, AVANT le premier rebuild : après quoi les
+    # grouphints sont immuables (BCP-002-01). Best-effort — un registre illisible ne doit pas
+    # empêcher le provider de démarrer.
+    try:
+        normaliser_grouping_registre()
+    except Exception as e:
+        log.warning("nmos: normalisation des grouphints échouée : %s", e)
+    # IS-12 AVANT le premier rebuild : c'est lui qui pose le control `ncp` dans les Devices, et
+    # une ressource enregistrée sans ce control n'annoncerait le protocole à personne jusqu'au
+    # prochain changement d'état.
+    from app.database import db_get_setting as _dgs
+    if _dgs("nmos_is12_enabled", False):
+        try:
+            from . import is12
+            is12.start()
+        except Exception as e:
+            log.error("nmos: démarrage IS-12 échoué : %s", e)
+    if _dgs("nmos_is14_enabled", False):
+        try:
+            from . import is14
+            is14.start()
+        except Exception as e:
+            log.error("nmos: démarrage IS-14 échoué : %s", e)
     rebuild_model()
     # Restaure les abonnements RX persistés (survie au redémarrage de l'orchestrateur) + re-push.
     try:
@@ -2338,6 +2528,12 @@ def start(registry_url):
 
 def stop():
     global _running, _register_thread
+    from . import is12, is14
+    for nom, mod in (("IS-12", is12), ("IS-14", is14)):
+        try:
+            mod.stop()
+        except Exception as e:
+            log.warning("nmos: arrêt %s : %s", nom, e)
     _mdns_stop()
     if not _running:
         return
@@ -2364,7 +2560,16 @@ def status_dict():
             "receiver_count": len(_receivers),
             "sender_count": len(_senders),
             "mdns_active": bool(_state.get("mdns_active")),
+            "is12": _is12_status(),
         }
+
+
+def _is12_status():
+    try:
+        from . import is12
+        return is12.status_dict()
+    except Exception as e:
+        return {"actif": False, "erreur": str(e)}
 
 def notify_state_change():
     """Appelé quand un container ou son nmos_receivers_count change. Rebuild + re-register si actif."""
@@ -2576,7 +2781,90 @@ def register_routes(bp):
         st["auto_activate_senders_setting"] = bool(db_get_setting("nmos_auto_activate_senders", False))
         st["sdp_source_filter_setting"] = bool(db_get_setting("nmos_sdp_source_filter", True))
         st["mode_setting"]           = db_get_setting("nmos_mode", "auto") or "auto"
+        st["is12_enabled_setting"]   = bool(db_get_setting("nmos_is12_enabled", False))
+        st["is12_port_setting"]      = int(db_get_setting("nmos_is12_port", 5010) or 5010)
+        st["asset"]                  = asset_info()      # BCP-002-02
         return jsonify(st)
+
+    @bp.route("/api/nmos/asset", methods=["POST"])
+    @require_perm("settings.edit")
+    def nmos_asset_apply():
+        """Information distinctive BCP-002-02. `instance_id` n'est PAS modifiable : c'est l'UUID de
+        Node, et la BCP exige que le triplet reste unique — le laisser saisir, c'est offrir de le
+        rendre ambigu."""
+        data = request.json or {}
+        for cle, defaut in (("manufacturer", ASSET_MANUFACTURER_DEFAUT),
+                            ("product", ASSET_PRODUCT_DEFAUT),
+                            ("function", ASSET_FUNCTION_DEFAUT)):
+            if cle in data:
+                v = str(data.get(cle) or "").strip() or defaut
+                db_set_setting("nmos_asset_" + cle, v)
+        notify_state_change()      # Node et Device changent de tags → republier au registry
+        return jsonify(asset_info())
+
+    # ─── IS-12 / BCP-008 : supervision des Receivers et Senders ──────────────────
+    @bp.route("/api/nmos/is12/status", methods=["GET"])
+    @require_login
+    def nmos_is12_status():
+        from . import is12
+        st = is12.status_dict()
+        st["enabled_setting"] = bool(db_get_setting("nmos_is12_enabled", False))
+        st["port_setting"]    = int(db_get_setting("nmos_is12_port", is12.PORT_DEFAUT)
+                                    or is12.PORT_DEFAUT)
+        # IS-12 supervise les ressources IS-04 : sans provider NMOS, il n'y a rien à superviser.
+        # Le dire, plutôt que d'afficher une table vide sans explication.
+        st["nmos_enabled_setting"] = bool(db_get_setting("nmos_enabled", False))
+        from . import is14
+        st["is14"] = is14.status_dict()
+        return jsonify(st)
+
+    @bp.route("/api/nmos/is12/monitors", methods=["GET"])
+    @require_login
+    def nmos_is12_monitors():
+        """État courant de chaque monitor — la MÊME vérité que celle servie aux contrôleurs
+        tiers. Si cette page et un contrôleur externe divergeaient, l'un des deux mentirait."""
+        from . import is12
+        return jsonify({"monitors": is12.etat_monitors()})
+
+    @bp.route("/api/nmos/is14/apply", methods=["POST"])
+    @require_perm("settings.edit")
+    def nmos_is14_apply():
+        from . import is14
+        enabled = bool((request.json or {}).get("enabled"))
+        db_set_setting("nmos_is14_enabled", enabled)
+        if enabled:
+            is14.start()
+        else:
+            is14.stop()
+        # Le tableau `controls` du Device gagne ou perd l'entrée `configuration` → republier.
+        notify_state_change()
+        return jsonify(is14.status_dict())
+
+    @bp.route("/api/nmos/is12/apply", methods=["POST"])
+    @require_perm("settings.edit")
+    def nmos_is12_apply():
+        from . import is12
+        data = request.json or {}
+        enabled = bool(data.get("enabled"))
+        port = data.get("port")
+        if port is not None:
+            try:
+                port = int(port)
+            except (TypeError, ValueError):
+                return jsonify({"error": "port invalide"}), 400
+            if not (1 <= port <= 65535):
+                return jsonify({"error": "port hors bornes"}), 400
+            db_set_setting("nmos_is12_port", port)
+        db_set_setting("nmos_is12_enabled", enabled)
+        is12.stop()
+        if enabled:
+            if not is12.start():
+                return jsonify({"error": "le serveur IS-12 n'a pas pu écouter sur ce port",
+                                **is12.status_dict()}), 500
+        # Le tableau `controls` des Devices change avec l'état d'IS-12 : il faut le republier au
+        # registre, sinon les contrôleurs continuent de voir l'ancienne annonce.
+        notify_state_change()
+        return jsonify(is12.status_dict())
 
     @bp.route("/api/nmos/apply", methods=["POST"])
     @require_perm("settings.edit")
@@ -3300,3 +3588,12 @@ def register_routes(bp):
         if not pf:
             return jsonify({"ok": False, "error": "nmos_2110_pf non renseigné"}), 400
         return jsonify(fix_vf_assignments(primary_host(), pf))
+
+
+# Les endpoints IS-14 vivent sur CE blueprint (celui d'IS-04/IS-05, monté par main.py), pas sur
+# celui de l'API interne : c'est du NMOS, il doit être sous /x-nmos/. L'import est en fin de
+# module pour que les routes soient greffées AVANT que main.py n'enregistre le blueprint — et il
+# doit rester ici, pas en tête : `is14` importe `modele`, qui importe `monitors`, qui remonte à
+# `app.metrics`. Un import en tête de fichier boucle.
+from . import is14 as _is14          # noqa: E402
+_is14.enregistrer(bp)

@@ -1,0 +1,790 @@
+{
+ "_provenance": {
+  "specification": "bcp-008-monitoring",
+  "repository": "https://github.com/AMWA-TV/nmos-control-feature-sets",
+  "branch": "main",
+  "commit": "3c78fb7d8da35adaded7538fcdfccc55dbd8fd08",
+  "license": "Apache-2.0 (AMWA)",
+  "note": "Descripteurs de classes et de types AMWA repris VERBATIM. Ne pas editer a la main : re-generer depuis le depot amont."
+ },
+ "classes": [
+  {
+   "description": "Baseline status monitoring class",
+   "classId": [
+    1,
+    2,
+    2
+   ],
+   "name": "NcStatusMonitor",
+   "fixedRole": null,
+   "properties": [
+    {
+     "description": "Overall status property",
+     "id": {
+      "level": 3,
+      "index": 1
+     },
+     "name": "overallStatus",
+     "typeName": "NcOverallStatus",
+     "isReadOnly": true,
+     "isNullable": false,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "Overall status message property",
+     "id": {
+      "level": 3,
+      "index": 2
+     },
+     "name": "overallStatusMessage",
+     "typeName": "NcString",
+     "isReadOnly": true,
+     "isNullable": true,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "Status reporting delay property (in seconds, default is 3s and 0 means no delay)",
+     "id": {
+      "level": 3,
+      "index": 3
+     },
+     "name": "statusReportingDelay",
+     "typeName": "NcUint32",
+     "isReadOnly": false,
+     "isNullable": false,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    }
+   ],
+   "methods": [],
+   "events": []
+  },
+  {
+   "description": "Receiver monitor class descriptor",
+   "classId": [
+    1,
+    2,
+    2,
+    1
+   ],
+   "name": "NcReceiverMonitor",
+   "fixedRole": null,
+   "properties": [
+    {
+     "description": "Link status property",
+     "id": {
+      "level": 4,
+      "index": 1
+     },
+     "name": "linkStatus",
+     "typeName": "NcLinkStatus",
+     "isReadOnly": true,
+     "isNullable": false,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "Link status message property",
+     "id": {
+      "level": 4,
+      "index": 2
+     },
+     "name": "linkStatusMessage",
+     "typeName": "NcString",
+     "isReadOnly": true,
+     "isNullable": true,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "Link status transition counter property",
+     "id": {
+      "level": 4,
+      "index": 3
+     },
+     "name": "linkStatusTransitionCounter",
+     "typeName": "NcUint64",
+     "isReadOnly": true,
+     "isNullable": false,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "Connection status property",
+     "id": {
+      "level": 4,
+      "index": 4
+     },
+     "name": "connectionStatus",
+     "typeName": "NcConnectionStatus",
+     "isReadOnly": true,
+     "isNullable": false,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "Connection status message property",
+     "id": {
+      "level": 4,
+      "index": 5
+     },
+     "name": "connectionStatusMessage",
+     "typeName": "NcString",
+     "isReadOnly": true,
+     "isNullable": true,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "Connection status transition counter property",
+     "id": {
+      "level": 4,
+      "index": 6
+     },
+     "name": "connectionStatusTransitionCounter",
+     "typeName": "NcUint64",
+     "isReadOnly": true,
+     "isNullable": false,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "External synchronization status property",
+     "id": {
+      "level": 4,
+      "index": 7
+     },
+     "name": "externalSynchronizationStatus",
+     "typeName": "NcSynchronizationStatus",
+     "isReadOnly": true,
+     "isNullable": false,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "External synchronization status message property",
+     "id": {
+      "level": 4,
+      "index": 8
+     },
+     "name": "externalSynchronizationStatusMessage",
+     "typeName": "NcString",
+     "isReadOnly": true,
+     "isNullable": true,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "External synchronization status transition counter property",
+     "id": {
+      "level": 4,
+      "index": 9
+     },
+     "name": "externalSynchronizationStatusTransitionCounter",
+     "typeName": "NcUint64",
+     "isReadOnly": true,
+     "isNullable": false,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "Synchronization source id property",
+     "id": {
+      "level": 4,
+      "index": 10
+     },
+     "name": "synchronizationSourceId",
+     "typeName": "NcString",
+     "isReadOnly": true,
+     "isNullable": true,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "Stream status property",
+     "id": {
+      "level": 4,
+      "index": 11
+     },
+     "name": "streamStatus",
+     "typeName": "NcStreamStatus",
+     "isReadOnly": true,
+     "isNullable": false,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "Stream status message property",
+     "id": {
+      "level": 4,
+      "index": 12
+     },
+     "name": "streamStatusMessage",
+     "typeName": "NcString",
+     "isReadOnly": true,
+     "isNullable": true,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "Stream status transition counter property",
+     "id": {
+      "level": 4,
+      "index": 13
+     },
+     "name": "streamStatusTransitionCounter",
+     "typeName": "NcUint64",
+     "isReadOnly": true,
+     "isNullable": false,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "Automatic reset counters and status messages property (default: true)",
+     "id": {
+      "level": 4,
+      "index": 14
+     },
+     "name": "autoResetCountersAndMessages",
+     "typeName": "NcBoolean",
+     "isReadOnly": false,
+     "isNullable": false,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    }
+   ],
+   "methods": [
+    {
+     "description": "Gets the lost packet counters",
+     "id": {
+      "level": 4,
+      "index": 1
+     },
+     "name": "GetLostPacketCounters",
+     "resultDatatype": "NcMethodResultCounters",
+     "parameters": [],
+     "isDeprecated": false
+    },
+    {
+     "description": "Gets the late packet counters",
+     "id": {
+      "level": 4,
+      "index": 2
+     },
+     "name": "GetLatePacketCounters",
+     "resultDatatype": "NcMethodResultCounters",
+     "parameters": [],
+     "isDeprecated": false
+    },
+    {
+     "description": "Resets ALL counters and status messages",
+     "id": {
+      "level": 4,
+      "index": 3
+     },
+     "name": "ResetCountersAndMessages",
+     "resultDatatype": "NcMethodResult",
+     "parameters": [],
+     "isDeprecated": false
+    }
+   ],
+   "events": []
+  },
+  {
+   "description": "Sender monitor class descriptor",
+   "classId": [
+    1,
+    2,
+    2,
+    2
+   ],
+   "name": "NcSenderMonitor",
+   "fixedRole": null,
+   "properties": [
+    {
+     "description": "Link status property",
+     "id": {
+      "level": 4,
+      "index": 1
+     },
+     "name": "linkStatus",
+     "typeName": "NcLinkStatus",
+     "isReadOnly": true,
+     "isNullable": false,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "Link status message property",
+     "id": {
+      "level": 4,
+      "index": 2
+     },
+     "name": "linkStatusMessage",
+     "typeName": "NcString",
+     "isReadOnly": true,
+     "isNullable": true,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "Link status transition counter property",
+     "id": {
+      "level": 4,
+      "index": 3
+     },
+     "name": "linkStatusTransitionCounter",
+     "typeName": "NcUint64",
+     "isReadOnly": true,
+     "isNullable": false,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "Transmission status property",
+     "id": {
+      "level": 4,
+      "index": 4
+     },
+     "name": "transmissionStatus",
+     "typeName": "NcTransmissionStatus",
+     "isReadOnly": true,
+     "isNullable": false,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "Transmission status message property",
+     "id": {
+      "level": 4,
+      "index": 5
+     },
+     "name": "transmissionStatusMessage",
+     "typeName": "NcString",
+     "isReadOnly": true,
+     "isNullable": true,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "Transmission status transition counter property",
+     "id": {
+      "level": 4,
+      "index": 6
+     },
+     "name": "transmissionStatusTransitionCounter",
+     "typeName": "NcUint64",
+     "isReadOnly": true,
+     "isNullable": false,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "External synchronization status property",
+     "id": {
+      "level": 4,
+      "index": 7
+     },
+     "name": "externalSynchronizationStatus",
+     "typeName": "NcSynchronizationStatus",
+     "isReadOnly": true,
+     "isNullable": false,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "External synchronization status message property",
+     "id": {
+      "level": 4,
+      "index": 8
+     },
+     "name": "externalSynchronizationStatusMessage",
+     "typeName": "NcString",
+     "isReadOnly": true,
+     "isNullable": true,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "External synchronization status transition counter property",
+     "id": {
+      "level": 4,
+      "index": 9
+     },
+     "name": "externalSynchronizationStatusTransitionCounter",
+     "typeName": "NcUint64",
+     "isReadOnly": true,
+     "isNullable": false,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "Synchronization source id property",
+     "id": {
+      "level": 4,
+      "index": 10
+     },
+     "name": "synchronizationSourceId",
+     "typeName": "NcString",
+     "isReadOnly": true,
+     "isNullable": true,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "Essence status property",
+     "id": {
+      "level": 4,
+      "index": 11
+     },
+     "name": "essenceStatus",
+     "typeName": "NcEssenceStatus",
+     "isReadOnly": true,
+     "isNullable": false,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "Essence status message property",
+     "id": {
+      "level": 4,
+      "index": 12
+     },
+     "name": "essenceStatusMessage",
+     "typeName": "NcString",
+     "isReadOnly": true,
+     "isNullable": true,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "Essence status transition counter property",
+     "id": {
+      "level": 4,
+      "index": 13
+     },
+     "name": "essenceStatusTransitionCounter",
+     "typeName": "NcUint64",
+     "isReadOnly": true,
+     "isNullable": false,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    },
+    {
+     "description": "Automatic reset counters and status messages property (default: true)",
+     "id": {
+      "level": 4,
+      "index": 14
+     },
+     "name": "autoResetCountersAndMessages",
+     "typeName": "NcBoolean",
+     "isReadOnly": false,
+     "isNullable": false,
+     "isSequence": false,
+     "isDeprecated": false,
+     "constraints": null
+    }
+   ],
+   "methods": [
+    {
+     "description": "Gets the transmission error counters",
+     "id": {
+      "level": 4,
+      "index": 1
+     },
+     "name": "GetTransmissionErrorCounters",
+     "resultDatatype": "NcMethodResultCounters",
+     "parameters": [],
+     "isDeprecated": false
+    },
+    {
+     "description": "Resets ALL counters and status messages",
+     "id": {
+      "level": 4,
+      "index": 2
+     },
+     "name": "ResetCountersAndMessages",
+     "resultDatatype": "NcMethodResult",
+     "parameters": [],
+     "isDeprecated": false
+    }
+   ],
+   "events": []
+  }
+ ],
+ "datatypes": [
+  {
+   "description": "Connection status enum data type",
+   "name": "NcConnectionStatus",
+   "type": 3,
+   "items": [
+    {
+     "description": "Inactive",
+     "name": "Inactive",
+     "value": 0
+    },
+    {
+     "description": "Active and healthy",
+     "name": "Healthy",
+     "value": 1
+    },
+    {
+     "description": "Active and partially healthy",
+     "name": "PartiallyHealthy",
+     "value": 2
+    },
+    {
+     "description": "Active and unhealthy",
+     "name": "Unhealthy",
+     "value": 3
+    }
+   ],
+   "constraints": null
+  },
+  {
+   "description": "Counter data type",
+   "name": "NcCounter",
+   "type": 2,
+   "fields": [
+    {
+     "description": "Counter name",
+     "name": "name",
+     "typeName": "NcString",
+     "isNullable": false,
+     "isSequence": false,
+     "constraints": null
+    },
+    {
+     "description": "Counter value",
+     "name": "value",
+     "typeName": "NcUint64",
+     "isNullable": false,
+     "isSequence": false,
+     "constraints": null
+    },
+    {
+     "description": "Optional counter description",
+     "name": "description",
+     "typeName": "NcString",
+     "isNullable": true,
+     "isSequence": false,
+     "constraints": null
+    }
+   ],
+   "parentType": null,
+   "constraints": null
+  },
+  {
+   "description": "Essence status enum data type",
+   "name": "NcEssenceStatus",
+   "type": 3,
+   "items": [
+    {
+     "description": "Inactive",
+     "name": "Inactive",
+     "value": 0
+    },
+    {
+     "description": "Active and healthy",
+     "name": "Healthy",
+     "value": 1
+    },
+    {
+     "description": "Active and partially healthy",
+     "name": "PartiallyHealthy",
+     "value": 2
+    },
+    {
+     "description": "Active and unhealthy",
+     "name": "Unhealthy",
+     "value": 3
+    }
+   ],
+   "constraints": null
+  },
+  {
+   "description": "Link status enum data type",
+   "name": "NcLinkStatus",
+   "type": 3,
+   "items": [
+    {
+     "description": "All the associated network interfaces are up",
+     "name": "AllUp",
+     "value": 1
+    },
+    {
+     "description": "Some of the associated network interfaces are down",
+     "name": "SomeDown",
+     "value": 2
+    },
+    {
+     "description": "All the associated network interfaces are down",
+     "name": "AllDown",
+     "value": 3
+    }
+   ],
+   "constraints": null
+  },
+  {
+   "description": "Counters method result",
+   "name": "NcMethodResultCounters",
+   "type": 2,
+   "fields": [
+    {
+     "description": "Counters",
+     "name": "value",
+     "typeName": "NcCounter",
+     "isNullable": false,
+     "isSequence": true,
+     "constraints": null
+    }
+   ],
+   "parentType": "NcMethodResult",
+   "constraints": null
+  },
+  {
+   "description": "Overall status enum data type",
+   "name": "NcOverallStatus",
+   "type": 3,
+   "items": [
+    {
+     "description": "Inactive",
+     "name": "Inactive",
+     "value": 0
+    },
+    {
+     "description": "The overall status is healthy",
+     "name": "Healthy",
+     "value": 1
+    },
+    {
+     "description": "The overall status is partially healthy",
+     "name": "PartiallyHealthy",
+     "value": 2
+    },
+    {
+     "description": "The overall status is unhealthy",
+     "name": "Unhealthy",
+     "value": 3
+    }
+   ],
+   "constraints": null
+  },
+  {
+   "description": "Stream status enum data type",
+   "name": "NcStreamStatus",
+   "type": 3,
+   "items": [
+    {
+     "description": "Inactive",
+     "name": "Inactive",
+     "value": 0
+    },
+    {
+     "description": "Active and healthy",
+     "name": "Healthy",
+     "value": 1
+    },
+    {
+     "description": "Active and partially healthy",
+     "name": "PartiallyHealthy",
+     "value": 2
+    },
+    {
+     "description": "Active and unhealthy",
+     "name": "Unhealthy",
+     "value": 3
+    }
+   ],
+   "constraints": null
+  },
+  {
+   "description": "Synchronization status enum data type",
+   "name": "NcSynchronizationStatus",
+   "type": 3,
+   "items": [
+    {
+     "description": "Feature not in use",
+     "name": "NotUsed",
+     "value": 0
+    },
+    {
+     "description": "Locked to a synchronization source",
+     "name": "Healthy",
+     "value": 1
+    },
+    {
+     "description": "Partially locked to a synchronization source",
+     "name": "PartiallyHealthy",
+     "value": 2
+    },
+    {
+     "description": "Not locked to a synchronization source",
+     "name": "Unhealthy",
+     "value": 3
+    }
+   ],
+   "constraints": null
+  },
+  {
+   "description": "Transmission status enum data type",
+   "name": "NcTransmissionStatus",
+   "type": 3,
+   "items": [
+    {
+     "description": "Inactive",
+     "name": "Inactive",
+     "value": 0
+    },
+    {
+     "description": "Active and healthy",
+     "name": "Healthy",
+     "value": 1
+    },
+    {
+     "description": "Active and partially healthy",
+     "name": "PartiallyHealthy",
+     "value": 2
+    },
+    {
+     "description": "Active and unhealthy",
+     "name": "Unhealthy",
+     "value": 3
+    }
+   ],
+   "constraints": null
+  }
+ ]
+}

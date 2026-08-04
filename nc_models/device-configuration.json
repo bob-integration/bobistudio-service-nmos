@@ -1,0 +1,439 @@
+{
+ "_provenance": {
+  "specification": "device-configuration",
+  "repository": "https://github.com/AMWA-TV/nmos-control-feature-sets",
+  "branch": "main",
+  "commit": "3c78fb7d8da35adaded7538fcdfccc55dbd8fd08",
+  "license": "Apache-2.0 (AMWA)",
+  "note": "Descripteurs de classes et de types AMWA repris VERBATIM. Ne pas editer a la main : re-generer depuis le depot amont."
+ },
+ "classes": [
+  {
+   "description": "NcBulkPropertiesManager class descriptor",
+   "classId": [
+    1,
+    3,
+    3
+   ],
+   "name": "NcBulkPropertiesManager",
+   "fixedRole": "BulkPropertiesManager",
+   "properties": [],
+   "methods": [
+    {
+     "description": "Get bulk object properties by given path",
+     "id": {
+      "level": 3,
+      "index": 1
+     },
+     "name": "GetPropertiesByPath",
+     "resultDatatype": "NcMethodResultBulkPropertiesHolder",
+     "parameters": [
+      {
+       "description": "The target role path",
+       "name": "path",
+       "typeName": "NcRolePath",
+       "isNullable": false,
+       "isSequence": false,
+       "constraints": null
+      },
+      {
+       "description": "If true will return properties on specified path and all the nested paths",
+       "name": "recurse",
+       "typeName": "NcBoolean",
+       "isNullable": false,
+       "isSequence": false,
+       "constraints": null
+      },
+      {
+       "description": "If true, property holders returned will contain non-null property descriptors and for full backups the ClassManager role path will also be included",
+       "name": "includeDescriptors",
+       "typeName": "NcBoolean",
+       "isNullable": false,
+       "isSequence": false,
+       "constraints": null
+      }
+     ],
+     "isDeprecated": false
+    },
+    {
+     "description": "Validate bulk properties for setting by given paths",
+     "id": {
+      "level": 3,
+      "index": 2
+     },
+     "name": "ValidateSetPropertiesByPath",
+     "resultDatatype": "NcMethodResultObjectPropertiesSetValidation",
+     "parameters": [
+      {
+       "description": "The values offered (this may include read-only values and also paths which are not the target role path)",
+       "name": "dataSet",
+       "typeName": "NcBulkPropertiesHolder",
+       "isNullable": false,
+       "isSequence": false,
+       "constraints": null
+      },
+      {
+       "description": "The target role path",
+       "name": "path",
+       "typeName": "NcRolePath",
+       "isNullable": false,
+       "isSequence": false,
+       "constraints": null
+      },
+      {
+       "description": "If true will validate properties on target path and all the nested paths",
+       "name": "recurse",
+       "typeName": "NcBoolean",
+       "isNullable": false,
+       "isSequence": false,
+       "constraints": null
+      },
+      {
+       "description": "Defines the restore mode to be applied",
+       "name": "restoreMode",
+       "typeName": "NcRestoreMode",
+       "isNullable": false,
+       "isSequence": false,
+       "constraints": null
+      }
+     ],
+     "isDeprecated": false
+    },
+    {
+     "description": "Set bulk properties by given paths",
+     "id": {
+      "level": 3,
+      "index": 3
+     },
+     "name": "SetPropertiesByPath",
+     "resultDatatype": "NcMethodResultObjectPropertiesSetValidation",
+     "parameters": [
+      {
+       "description": "The values offered (this may include read-only values and also paths which are not the target role path)",
+       "name": "dataSet",
+       "typeName": "NcBulkPropertiesHolder",
+       "isNullable": false,
+       "isSequence": false,
+       "constraints": null
+      },
+      {
+       "description": "The target role path",
+       "name": "path",
+       "typeName": "NcRolePath",
+       "isNullable": false,
+       "isSequence": false,
+       "constraints": null
+      },
+      {
+       "description": "If true will set properties on target path and all the nested paths",
+       "name": "recurse",
+       "typeName": "NcBoolean",
+       "isNullable": false,
+       "isSequence": false,
+       "constraints": null
+      },
+      {
+       "description": "Defines the restore mode to be applied",
+       "name": "restoreMode",
+       "typeName": "NcRestoreMode",
+       "isNullable": false,
+       "isSequence": false,
+       "constraints": null
+      }
+     ],
+     "isDeprecated": false
+    }
+   ],
+   "events": []
+  }
+ ],
+ "datatypes": [
+  {
+   "description": "Bulk properties holder descriptor",
+   "name": "NcBulkPropertiesHolder",
+   "type": 2,
+   "fields": [
+    {
+     "description": "Optional vendor specific fingerprinting mechanism used for validation purposes",
+     "name": "validationFingerprint",
+     "typeName": "NcString",
+     "isNullable": true,
+     "isSequence": false,
+     "constraints": null
+    },
+    {
+     "description": "Object properties holders",
+     "name": "values",
+     "typeName": "NcObjectPropertiesHolder",
+     "isNullable": false,
+     "isSequence": true,
+     "constraints": null
+    }
+   ],
+   "parentType": null,
+   "constraints": null
+  },
+  {
+   "description": "Bulk properties holder method result",
+   "name": "NcMethodResultBulkPropertiesHolder",
+   "type": 2,
+   "fields": [
+    {
+     "description": "Bulk properties holder value",
+     "name": "value",
+     "typeName": "NcBulkPropertiesHolder",
+     "isNullable": false,
+     "isSequence": false,
+     "constraints": null
+    }
+   ],
+   "parentType": "NcMethodResult",
+   "constraints": null
+  },
+  {
+   "description": "Object properties set validation method result",
+   "name": "NcMethodResultObjectPropertiesSetValidation",
+   "type": 2,
+   "fields": [
+    {
+     "description": "Object properties set path validations",
+     "name": "value",
+     "typeName": "NcObjectPropertiesSetValidation",
+     "isNullable": false,
+     "isSequence": true,
+     "constraints": null
+    }
+   ],
+   "parentType": "NcMethodResult",
+   "constraints": null
+  },
+  {
+   "description": "Object properties holder descriptor",
+   "name": "NcObjectPropertiesHolder",
+   "type": 2,
+   "fields": [
+    {
+     "description": "Object role path",
+     "name": "path",
+     "typeName": "NcRolePath",
+     "isNullable": false,
+     "isSequence": false,
+     "constraints": null
+    },
+    {
+     "description": "Sequence of role paths which are a dependency for this object (helpful to inform clients which objects need to be restored together)",
+     "name": "dependencyPaths",
+     "typeName": "NcRolePath",
+     "isNullable": false,
+     "isSequence": true,
+     "constraints": null
+    },
+    {
+     "description": "Sequence of class ids allowed as members of the block (non-block objects have this as an empty sequence)",
+     "name": "allowedMembersClasses",
+     "typeName": "NcClassId",
+     "isNullable": false,
+     "isSequence": true,
+     "constraints": null
+    },
+    {
+     "description": "Object properties values",
+     "name": "values",
+     "typeName": "NcPropertyHolder",
+     "isNullable": false,
+     "isSequence": true,
+     "constraints": null
+    },
+    {
+     "description": "Describes if the object is rebuildable",
+     "name": "isRebuildable",
+     "typeName": "NcBoolean",
+     "isNullable": false,
+     "isSequence": false,
+     "constraints": null
+    }
+   ],
+   "parentType": null,
+   "constraints": null
+  },
+  {
+   "description": "Object properties set validation descriptor",
+   "name": "NcObjectPropertiesSetValidation",
+   "type": 2,
+   "fields": [
+    {
+     "description": "Object role path",
+     "name": "path",
+     "typeName": "NcRolePath",
+     "isNullable": false,
+     "isSequence": false,
+     "constraints": null
+    },
+    {
+     "description": "Validation status",
+     "name": "status",
+     "typeName": "NcRestoreValidationStatus",
+     "isNullable": false,
+     "isSequence": false,
+     "constraints": null
+    },
+    {
+     "description": "Validation property notices",
+     "name": "notices",
+     "typeName": "NcPropertyRestoreNotice",
+     "isNullable": false,
+     "isSequence": true,
+     "constraints": null
+    },
+    {
+     "description": "Validation status message",
+     "name": "statusMessage",
+     "typeName": "NcString",
+     "isNullable": true,
+     "isSequence": false,
+     "constraints": null
+    }
+   ],
+   "parentType": null,
+   "constraints": null
+  },
+  {
+   "description": "Property holder descriptor",
+   "name": "NcPropertyHolder",
+   "type": 2,
+   "fields": [
+    {
+     "description": "Property id",
+     "name": "id",
+     "typeName": "NcPropertyId",
+     "isNullable": false,
+     "isSequence": false,
+     "constraints": null
+    },
+    {
+     "description": "Property descriptor",
+     "name": "descriptor",
+     "typeName": "NcPropertyDescriptor",
+     "isNullable": true,
+     "isSequence": false,
+     "constraints": null
+    },
+    {
+     "description": "Property value",
+     "name": "value",
+     "typeName": null,
+     "isNullable": true,
+     "isSequence": false,
+     "constraints": null
+    }
+   ],
+   "parentType": null,
+   "constraints": null
+  },
+  {
+   "description": "Property restore notice descriptor",
+   "name": "NcPropertyRestoreNotice",
+   "type": 2,
+   "fields": [
+    {
+     "description": "Property id",
+     "name": "id",
+     "typeName": "NcPropertyId",
+     "isNullable": false,
+     "isSequence": false,
+     "constraints": null
+    },
+    {
+     "description": "Property name",
+     "name": "name",
+     "typeName": "NcName",
+     "isNullable": false,
+     "isSequence": false,
+     "constraints": null
+    },
+    {
+     "description": "Property restore notice type",
+     "name": "noticeType",
+     "typeName": "NcPropertyRestoreNoticeType",
+     "isNullable": false,
+     "isSequence": false,
+     "constraints": null
+    },
+    {
+     "description": "Property restore notice message",
+     "name": "noticeMessage",
+     "typeName": "NcString",
+     "isNullable": false,
+     "isSequence": false,
+     "constraints": null
+    }
+   ],
+   "parentType": null,
+   "constraints": null
+  },
+  {
+   "description": "Property restore notice type enumeration",
+   "name": "NcPropertyRestoreNoticeType",
+   "type": 3,
+   "items": [
+    {
+     "description": "Warning property restore notice",
+     "name": "Warning",
+     "value": 300
+    },
+    {
+     "description": "Error property restore notice",
+     "name": "Error",
+     "value": 400
+    }
+   ],
+   "constraints": null
+  },
+  {
+   "description": "Restore mode enumeration",
+   "name": "NcRestoreMode",
+   "type": 3,
+   "items": [
+    {
+     "description": "Restore mode is Modify",
+     "name": "Modify",
+     "value": 0
+    },
+    {
+     "description": "Restore mode is Rebuild",
+     "name": "Rebuild",
+     "value": 1
+    }
+   ],
+   "constraints": null
+  },
+  {
+   "description": "Restore validation status enumeration",
+   "name": "NcRestoreValidationStatus",
+   "type": 3,
+   "items": [
+    {
+     "description": "Restore was successful",
+     "name": "Ok",
+     "value": 200
+    },
+    {
+     "description": "Restore failed",
+     "name": "Failed",
+     "value": 400
+    },
+    {
+     "description": "Restore failed because the role path is not found in the device model or the device cannot create the role path from the data set",
+     "name": "NotFound",
+     "value": 404
+    },
+    {
+     "description": "Restore failed due to an internal device error preventing the restore from happening",
+     "name": "DeviceError",
+     "value": 500
+    }
+   ],
+   "constraints": null
+  }
+ ]
+}

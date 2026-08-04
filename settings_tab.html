@@ -53,8 +53,13 @@
             <button class="btn btn-green" onclick="appliquerNmos()">Appliquer le préfixe</button>
             <div class="meta" style="flex:1; min-width:280px">Vide → <code>Rx 1 (video)</code>,
                 <code>Tx 1 (anc)</code>. Avec <code>REGIE-A</code> → <code>REGIE-A Rx 1 (video)</code>.
-                <b>Affichage seul</b> : ne change ni les UUID NMOS, ni les flux MXL, ni les SSRC —
-                aucun abonnement n'est à refaire.</div>
+                Ne change ni les UUID NMOS, ni les flux MXL, ni les SSRC — <b>aucun abonnement n'est
+                à refaire</b>. En revanche ce préfixe sert aussi de base aux <b>groupes naturels</b>
+                (BCP-002-01) : ceux-ci sont <b>figés à la création</b> de chaque ressource et ne
+                suivront donc PAS un changement de préfixe — c'est voulu, le registre NMOS impose
+                qu'un groupe soit immuable (un contrôleur s'en sert pour bâtir son nommage de
+                production et ne redemandera rien ensuite). Les ressources créées après le
+                changement, elles, porteront le nouveau préfixe.</div>
         </div>
         <div class="row" style="align-items:flex-start">
             <div class="field" style="flex:1">
@@ -82,6 +87,33 @@
         </div>
     </div>
 
+    <h2>Identité de l'appareil (BCP-002-02)</h2>
+    <div class="form">
+        <div class="meta" style="margin-bottom:var(--space-2)">
+            Ce que voit l'ingénieur d'exploitation devant une requête IS-04 qui rend plusieurs
+            appareils au même libellé. Ces trois valeurs sont publiées en tags sur le <b>Node</b> et
+            sur le <b>Device</b>, plus la <b>fonction</b> sur le Device. Elles alimentent aussi le
+            <code>NcDeviceManager</code> d'IS-12 — même source, pour que les deux protocoles ne
+            racontent pas deux appareils différents.
+        </div>
+        <div class="row" style="align-items:flex-end">
+            <div class="field"><label>Fabricant</label>
+                <input type="text" id="s_nmos_asset_manufacturer" class="wide" placeholder="BOBI SAS"></div>
+            <div class="field"><label>Produit</label>
+                <input type="text" id="s_nmos_asset_product" class="wide" placeholder="Bobi.Studio"></div>
+            <div class="field"><label>Fonction du Device</label>
+                <input type="text" id="s_nmos_asset_function" class="wide" placeholder="Gateway"></div>
+            <button class="btn btn-green" onclick="appliquerNmosAsset()">Appliquer</button>
+        </div>
+        <div class="row">
+            <div class="field" style="flex:1"><label>Identifiant d'instance <span class="meta">(non modifiable)</span></label>
+                <div id="nmos_asset_instance" class="meta" style="font-family:var(--font-mono); font-size:0.8em">—</div></div>
+            <div class="meta" style="flex:1; min-width:280px">C'est l'UUID du Node. La BCP exige que
+                le triplet <i>fabricant + produit + instance</i> soit unique ; le rendre saisissable
+                reviendrait à offrir de le rendre ambigu.</div>
+        </div>
+    </div>
+
     <h2>État du Node</h2>
     <div class="form">
         <div class="row">
@@ -97,6 +129,71 @@
                 <div id="nmos_status_counts" class="meta">—</div></div>
         </div>
         <div id="nmos_status_error" class="meta" style="margin-top:var(--space-2); color: var(--status-stopped-fg)"></div>
+    </div>
+
+    <h2>Supervision IS-12 (BCP-008)</h2>
+    <div class="form">
+        <div class="meta" style="margin-bottom:var(--space-2)">
+            <b>IS-12</b> est le protocole de contrôle NMOS (WebSocket). Il publie ici un
+            <b>moniteur par Receiver et par Sender</b> conforme à <b>BCP-008-01/02</b> : état du
+            lien, de la connexion, du flux, de la synchronisation PTP, compteurs et messages de
+            cause — lisibles par n'importe quel contrôleur tiers, sans API propriétaire.
+            <b>Lecture seule</b> : aucun objet publié ne permet de router ni de démarrer quoi que
+            ce soit. Le point d'accès est annoncé aux contrôleurs dans le tableau
+            <code>controls</code> des Devices IS-04.
+        </div>
+        <div class="row" style="align-items:flex-end">
+            <div class="field" style="align-self:center"><label style="display:flex; align-items:center; gap:var(--space-2)">
+                <input type="checkbox" class="ios-toggle" id="s_nmos_is12_enabled">
+                Activer IS-12
+            </label></div>
+            <div class="field"><label>Port WebSocket</label>
+                <input type="number" id="s_nmos_is12_port" class="num-stepper" min="1" max="65535" value="5010"></div>
+            <button class="btn btn-green" onclick="appliquerNmosIs12()">Appliquer</button>
+            <div class="field" style="flex:1; min-width:280px"><label>Point d'accès</label>
+                <div id="nmos_is12_href" class="meta" style="font-family:var(--font-mono); font-size:0.8em">—</div></div>
+        </div>
+        <div class="meta">
+            Port distinct de l'UI (5000) : le serveur de l'orchestrateur ne sait pas basculer une
+            connexion HTTP en WebSocket, et la spec IS-12 prévoit justement une URL à part.
+            Pensez au pare-feu du contrôleur.
+        </div>
+        <div class="row" style="align-items:flex-end; margin-top:var(--space-2)">
+            <div class="field" style="align-self:center"><label style="display:flex; align-items:center; gap:var(--space-2)">
+                <input type="checkbox" class="ios-toggle" id="s_nmos_is14_enabled" onchange="appliquerNmosIs14()">
+                Activer IS-14 (Configuration API, en HTTP)
+            </label></div>
+            <div class="field" style="flex:1; min-width:300px"><label>Point d'accès</label>
+                <div id="nmos_is14_href" class="meta" style="font-family:var(--font-mono); font-size:0.8em">—</div></div>
+        </div>
+        <div class="meta">
+            <b>Le même modèle qu'IS-12</b>, servi en REST sur le port de l'UI — pour un contrôleur
+            qui ne veut pas tenir une WebSocket ouverte. IS-14 apporte en plus la
+            <b>sauvegarde et la restauration</b> du modèle (<code>bulkProperties</code>) : une
+            validation à blanc est possible avant d'appliquer. Les deux protocoles peuvent tourner
+            ensemble — le modèle n'est bâti qu'une fois.
+        </div>
+        <div class="row" style="margin-top:var(--space-2)">
+            <div class="field"><label>Sessions</label><div id="nmos_is12_sessions" class="meta">—</div></div>
+            <div class="field"><label>Moniteurs</label><div id="nmos_is12_counts" class="meta">—</div></div>
+            <div class="field" style="flex:1"><label>Sans télémétrie</label>
+                <div id="nmos_is12_skipped" class="meta">—</div></div>
+        </div>
+        <div class="table-wrap" style="margin-top:var(--space-2)">
+            <table class="table" id="nmos_is12_table">
+                <thead><tr>
+                    <th>Ressource</th><th>Sens</th><th>Global</th><th>Lien</th>
+                    <th>Connexion / Émission</th><th>Flux / Essence</th><th>PTP</th><th>Cause</th>
+                </tr></thead>
+                <tbody id="nmos_is12_tbody"><tr><td colspan="8" class="meta">—</td></tr></tbody>
+            </table>
+        </div>
+        <div class="meta" style="margin-top:var(--space-2)">
+            <b>Inactif</b> n'est pas une panne : c'est un Receiver sans abonnement IS-05 ou un slot
+            de sortie sans cadence demandée. Les drapeaux de contenu (image figée, noir, silence)
+            ne dégradent le flux que s'ils sont <b>armés sur la source</b> (page I/O Sources) —
+            une mire figée volontairement reste saine.
+        </div>
     </div>
 
     <h2>Registre de ressources (cluster)</h2>
@@ -261,3 +358,131 @@
         </div>
     </div>
 </div>
+
+<script>
+// ─── Supervision IS-12 / BCP-008 ──────────────────────────────────────────────────────────────
+// Cette table affiche EXACTEMENT ce que le service publie aux contrôleurs tiers (même source :
+// /api/nmos/is12/monitors, alimenté par les mêmes objets). Une vue maison qui recalculerait les
+// statuts de son côté finirait par contredire les contrôleurs — et l'exploitant ne saurait plus
+// lequel croire.
+(function () {
+    const ETATS = {0: ['Inactif', 'var(--text-muted)'],
+                   1: ['Sain', 'var(--status-running-fg)'],
+                   2: ['Partiel', 'var(--status-warning-fg)'],
+                   3: ['En défaut', 'var(--status-stopped-fg)']};
+    // NcLinkStatus n'a pas d'etat neutre : 1 = tous les liens up, 2 = certains down, 3 = tous down.
+    const LIENS = {1: ['Tous up', 'var(--status-running-fg)'],
+                   2: ['Partiel', 'var(--status-warning-fg)'],
+                   3: ['Tous down', 'var(--status-stopped-fg)']};
+    // NcSynchronizationStatus : 0 = non utilisee (neutre), pas « inactif ».
+    const SYNC = Object.assign({}, ETATS, {0: ['Non observée', 'var(--text-muted)']});
+
+    function pastille(v, table) {
+        const e = (table || ETATS)[v];
+        if (!e) return '<span class="meta">—</span>';
+        return '<span style="color:' + e[1] + '">' + e[0] + '</span>';
+    }
+
+    window.appliquerNmosIs12 = async function () {
+        const payload = {
+            enabled: document.getElementById('s_nmos_is12_enabled').checked,
+            port: parseInt(document.getElementById('s_nmos_is12_port').value, 10) || 5010,
+        };
+        const r = await fetch('/api/nmos/is12/apply', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)});
+        const s = await r.json().catch(() => ({}));
+        if (!r.ok) {
+            mxlToast(s.error || 'IS-12 : application impossible', 'error');
+        }
+        rafraichirNmosIs12();
+    };
+
+    window.appliquerNmosAsset = async function () {
+        const g = id => (document.getElementById(id) || {}).value || '';
+        const r = await fetch('/api/nmos/asset', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({manufacturer: g('s_nmos_asset_manufacturer'),
+                                  product: g('s_nmos_asset_product'),
+                                  function: g('s_nmos_asset_function')})});
+        if (!r.ok) { mxlToast('Identité d\'appareil : échec', 'error'); return; }
+        rafraichirNmosIs12();
+    };
+
+    window.appliquerNmosIs14 = async function () {
+        const el = document.getElementById('s_nmos_is14_enabled');
+        const r = await fetch('/api/nmos/is14/apply', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({enabled: el.checked})});
+        if (!r.ok) { mxlToast('IS-14 : application impossible', 'error'); el.checked = !el.checked; }
+        rafraichirNmosIs12();
+    };
+
+    window.rafraichirNmosIs12 = async function () {
+        try {
+            const s = await (await fetch('/api/nmos/is12/status')).json();
+            {   const el = document.getElementById('s_nmos_is14_enabled');
+                const h  = document.getElementById('nmos_is14_href');
+                const s14 = s.is14 || {};
+                if (el && document.activeElement !== el) el.checked = !!s14.actif;
+                if (h) h.textContent = s14.href || '(désactivé)';
+            }
+            const a = s.asset || {};
+            // Champs de saisie : ne pas écraser ce que l'opérateur est en train de taper.
+            [['s_nmos_asset_manufacturer', a.manufacturer], ['s_nmos_asset_product', a.product],
+             ['s_nmos_asset_function', a.function]].forEach(function (p) {
+                const el = document.getElementById(p[0]);
+                if (el && document.activeElement !== el) el.value = p[1] || '';
+            });
+            const inst = document.getElementById('nmos_asset_instance');
+            if (inst) inst.textContent = a.instance_id || '—';
+            const chk = document.getElementById('s_nmos_is12_enabled');
+            const prt = document.getElementById('s_nmos_is12_port');
+            if (document.activeElement !== chk) chk.checked = !!s.enabled_setting;
+            if (document.activeElement !== prt) prt.value = s.port_setting || 5010;
+            document.getElementById('nmos_is12_href').textContent = s.href || '(arrêté)';
+            document.getElementById('nmos_is12_sessions').textContent = s.sessions ?? '—';
+            document.getElementById('nmos_is12_counts').textContent =
+                (s.monitors_rx || 0) + ' Rx / ' + (s.monitors_tx || 0) + ' Tx';
+            // Ne jamais taire ce qui n'est PAS supervisé : une ressource NMOS sans télémétrie 2110
+            // n'a pas de moniteur, et un tableau qui ne montre que le supervisé laisse croire que
+            // tout l'est.
+            document.getElementById('nmos_is12_skipped').textContent =
+                (s.sans_monitor || 0) + ' ressource(s) IS-04 sans moteur 2110 derrière';
+            if (!s.actif) {
+                document.getElementById('nmos_is12_tbody').innerHTML =
+                    '<tr><td colspan="8" class="meta">IS-12 arrêté.</td></tr>';
+                return;
+            }
+            if (!s.nmos_enabled_setting) {
+                // Une table vide sans explication laisse chercher la panne du mauvais côté.
+                document.getElementById('nmos_is12_tbody').innerHTML =
+                    '<tr><td colspan="8" class="meta">IS-12 tourne, mais le provider NMOS est '
+                    + 'désactivé : aucune ressource IS-04 n\'existe, donc aucun moniteur. '
+                    + 'Activez le provider ci-dessus.</td></tr>';
+                return;
+            }
+            const m = (await (await fetch('/api/nmos/is12/monitors')).json()).monitors || [];
+            document.getElementById('nmos_is12_tbody').innerHTML = m.length ? m.map(function (x) {
+                const rx = x.sens === 'rx';
+                return '<tr><td>' + (x.label || x.resource_id) + '</td>'
+                     + '<td>' + (rx ? 'Rx' : 'Tx') + '</td>'
+                     + '<td>' + pastille(x.overall) + '</td>'
+                     + '<td>' + pastille(x.link, LIENS) + '</td>'
+                     + '<td>' + pastille(rx ? x.connection : x.transmission) + '</td>'
+                     + '<td>' + pastille(rx ? x.stream : x.essence) + '</td>'
+                     + '<td>' + pastille(x.sync, SYNC) + '</td>'
+                     + '<td class="meta">' + (x.message || '') + '</td></tr>';
+            }).join('') : '<tr><td colspan="8" class="meta">Aucun moniteur.</td></tr>';
+        } catch (e) { console.error('is12:', e); }
+    };
+
+    setInterval(function () {
+        const tab = document.getElementById('protocoles-tab-nmos');
+        if (tab && tab.style.display !== 'none' &&
+            document.getElementById('set-tab-protocoles')?.style?.display !== 'none') {
+            rafraichirNmosIs12();
+        }
+    }, 3000);
+})();
+</script>

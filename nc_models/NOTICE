@@ -1,0 +1,32 @@
+Modèles AMWA repris verbatim
+============================
+
+Les deux bundles JSON de ce dossier sont une recopie VERBATIM des descripteurs de classes et
+de types publiés par l'AMWA, regroupés en un fichier par spécification pour éviter d'installer
+une centaine de petits fichiers dans l'arbre :
+
+  ms-05-02.json            AMWA MS-05-02 « NMOS Control Framework »
+                           https://github.com/AMWA-TV/ms-05-02 (branche v1.0.x, models/)
+                           + les 10 descripteurs de types PRIMITIFS (NcBoolean, NcInt16…),
+                             qui sont définis dans la prose de Framework.md et n'ont donc pas
+                             de fichier JSON amont — seuls éléments synthétisés ici.
+
+  bcp-008-monitoring.json  AMWA « Monitoring » NMOS Control Feature Set, qui porte le modèle
+                           technique de BCP-008-01 (NcReceiverMonitor) et BCP-008-02
+                           (NcSenderMonitor).
+                           https://github.com/AMWA-TV/nmos-control-feature-sets (monitoring/models/)
+
+Le commit amont exact de chaque bundle est inscrit dans sa clé `_provenance`.
+
+Licence amont : Apache License 2.0, © AMWA. Voir https://www.apache.org/licenses/LICENSE-2.0
+Le reste du service NMOS de Bobi.Studio reste sous GPL-3.0-or-later (fichier LICENSE du dossier
+parent) ; Apache-2.0 est compatible avec la GPLv3.
+
+POURQUOI VERBATIM plutôt qu'une transcription en Python : l'interopérabilité IS-12 repose sur des
+identifiants numériques (classId `[1,2,2,1]`, propriété 4p12, méthode 4m3…). Une seule coquille de
+transcription produit un modèle qui se répond à lui-même et que personne d'autre ne sait lire —
+sans jamais lever d'erreur. Le socle `services/nmos/ncp.py` construit ses tables de dispatch DEPUIS
+ces fichiers : le modèle publié et le comportement réel ne peuvent pas diverger.
+
+Mise à jour : re-cloner les dépôts amont et régénérer les bundles (concaténation triée de
+models/classes/*.json et models/datatypes/*.json, plus les primitifs pour MS-05-02).
