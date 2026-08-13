@@ -25,6 +25,7 @@ Settings (table `settings`) :
 - nmos_host_address (string) — IP/host annoncée comme href du Node
 """
 import json
+from app.numerotation import slot_tx, slot_rx, numero, indice, cle_tx_shm
 import logging
 import re
 import socket
@@ -781,9 +782,9 @@ def rebuild_model():
         for vf in _rx_videos:
             idx = vf["idx"]
             label = f"{_pfx}Rx {idx + 1} (video)"
-            rid, label = _registry_id(f"receiver:v:{vmid}:{idx}", instance_uuid, f"v:{idx}", "video",
+            rid, label = _registry_id(f"receiver:v:{vmid}:{idx}", instance_uuid, slot_rx("v", idx), "video",
                                       "receiver", label, {}, _grp_name(idx), "video",
-                                      bind_override=nmos_bind.get(f"v:{idx}"), allow_autoseed=allow_autoseed)
+                                      bind_override=nmos_bind.get(slot_rx("v", idx)), allow_autoseed=allow_autoseed)
             if rid is None:
                 continue
             new_receivers[rid] = _build_receiver_resource(rid, did, vmid, idx, label, version, fmt="video", legs=n_legs)
@@ -803,9 +804,9 @@ def rebuild_model():
             n   = (_rx_sub_of.get(("audio", idx), 0) or 0) + 1
             grp = _child_grp(vi, "audio", idx)
             label = f"{_pfx}Rx {idx + 1} (audio)"
-            rid, label = _registry_id(f"receiver:a:{vmid}:{idx}", instance_uuid, f"a:{idx}", "audio",
+            rid, label = _registry_id(f"receiver:a:{vmid}:{idx}", instance_uuid, slot_rx("a", idx), "audio",
                                       "receiver", label, {}, grp, f"audio {n:02d}",
-                                      bind_override=nmos_bind.get(f"a:{idx}"), allow_autoseed=allow_autoseed)
+                                      bind_override=nmos_bind.get(slot_rx("a", idx)), allow_autoseed=allow_autoseed)
             if rid is None:
                 continue
             new_receivers[rid] = _build_receiver_resource(rid, did, vmid, idx, label, version, fmt="audio", legs=n_legs)
@@ -825,9 +826,9 @@ def rebuild_model():
             n   = (_rx_sub_of.get(("anc", idx), 0) or 0) + 1
             grp = _child_grp(vi, "anc", idx)
             label = f"{_pfx}Rx {idx + 1} (anc)"
-            rid, label = _registry_id(f"receiver:d:{vmid}:{idx}", instance_uuid, f"d:{idx}", "data",
+            rid, label = _registry_id(f"receiver:d:{vmid}:{idx}", instance_uuid, slot_rx("d", idx), "data",
                                       "receiver", label, {}, grp, f"anc {n:02d}",
-                                      bind_override=nmos_bind.get(f"d:{idx}"), allow_autoseed=allow_autoseed)
+                                      bind_override=nmos_bind.get(slot_rx("d", idx)), allow_autoseed=allow_autoseed)
             if rid is None:
                 continue
             new_receivers[rid] = _build_receiver_resource(rid, did, vmid, idx, label, version, fmt="data", legs=n_legs)
@@ -926,7 +927,7 @@ def rebuild_model():
                 cs, transfer = nmos_colorimetry(tslot.get("color_primaries"), tslot.get("color_trc"))
             # Passthrough du balayage : la vérité est le format du PRODUCTEUR du shm câblé sur ce
             # slot ; à défaut, le scan reçu par le moteur lui-même. Ne pas mettre progressif en dur.
-            _tx_shm = dc_params.get(f"tx{tx_idx}_shm") or ""
+            _tx_shm = dc_params.get(cle_tx_shm(tx_idx)) or ""
             _src_fmt = {}
             if _tx_shm:
                 try:
@@ -940,9 +941,9 @@ def rebuild_model():
             _tr = {"multicast_ip": mcast, "port": port, "width": width, "height": height,
                    "chroma": chroma, "bit_depth": bit_depth, "colorspace": cs, "transfer": transfer,
                    "scan": _scan, "field_order": _fo, "fps": tslot.get("fps")}
-            snd_id, label = _registry_id(f"sender:v:{vmid}:tx{tx_idx}", instance_uuid, f"tx{tx_idx}:v",
+            snd_id, label = _registry_id(f"sender:v:{vmid}:tx{tx_idx}", instance_uuid, slot_tx(tx_idx, "v"),
                                          "video", "sender", label, _tr, f"{base} Tx {tx_idx + 1:02d}", "video",
-                                         bind_override=nmos_bind.get(f"tx{tx_idx}:v"), allow_autoseed=allow_autoseed)
+                                         bind_override=nmos_bind.get(slot_tx(tx_idx, "v")), allow_autoseed=allow_autoseed)
             if snd_id is None:
                 continue
             src_id = _stable_uuid(f"source:{snd_id}")
@@ -990,9 +991,9 @@ def rebuild_model():
             mcast = a.get("multicast_ip") or "239.10.20.{}".format((a_idx % 250) + 1)
             port  = int(a.get("dest_port") or (5004 + 2 * a_idx))
             label  = f"{_pfx}Tx (audio {a_idx + 1})"
-            snd_id, label = _registry_id(f"sender:a:{vmid}:{a_idx}", instance_uuid, f"a:{a_idx}", "audio",
+            snd_id, label = _registry_id(f"sender:a:{vmid}:{a_idx}", instance_uuid, slot_rx("a", a_idx), "audio",
                                          "sender", label, {"multicast_ip": mcast, "port": port}, base, f"audio {a_idx + 1:02d}",
-                                         bind_override=nmos_bind.get(f"a:{a_idx}"), allow_autoseed=allow_autoseed)
+                                         bind_override=nmos_bind.get(slot_rx("a", a_idx)), allow_autoseed=allow_autoseed)
             if snd_id is None:
                 continue
             src_id = _stable_uuid(f"source:{snd_id}")
@@ -1029,10 +1030,10 @@ def rebuild_model():
                 port   = int(acfg.get("dest_port") or 0)
                 label  = f"{_pfx}Tx {tx_idx + 1} (audio {ai + 1})"
                 snd_id, label = _registry_id(f"sender:a:{vmid}:tx{tx_idx}:{ai}", instance_uuid,
-                                             f"tx{tx_idx}:a{ai}", "audio", "sender", label,
+                                             slot_tx(tx_idx, "a%d" % ai), "audio", "sender", label,
                                              {"multicast_ip": mcast, "port": port},
                                              f"{base} Tx {tx_idx + 1:02d}", f"audio {ai + 1:02d}",
-                                             bind_override=nmos_bind.get(f"tx{tx_idx}:a{ai}"), allow_autoseed=allow_autoseed)
+                                             bind_override=nmos_bind.get(slot_tx(tx_idx, "a%d" % ai)), allow_autoseed=allow_autoseed)
                 if snd_id is None:
                     continue
                 src_id = _stable_uuid(f"source:{snd_id}")
@@ -1072,10 +1073,10 @@ def rebuild_model():
                 continue
             port = int(tslot.get("anc_dest_port") or 0)
             label  = f"{_pfx}Tx {tx_idx + 1} (anc)"
-            snd_id, label = _registry_id(f"sender:d:{vmid}:tx{tx_idx}", instance_uuid, f"tx{tx_idx}:d",
+            snd_id, label = _registry_id(f"sender:d:{vmid}:tx{tx_idx}", instance_uuid, slot_tx(tx_idx, "d"),
                                          "data", "sender", label, {"multicast_ip": mcast, "port": port},
                                          f"{base} Tx {tx_idx + 1:02d}", "anc",
-                                         bind_override=nmos_bind.get(f"tx{tx_idx}:d"), allow_autoseed=allow_autoseed)
+                                         bind_override=nmos_bind.get(slot_tx(tx_idx, "d")), allow_autoseed=allow_autoseed)
             if snd_id is None:
                 continue
             src_id = _stable_uuid(f"source:{snd_id}")
@@ -1387,17 +1388,17 @@ def _slot_key_for_state(s, kind):
     if kind == "sender":
         tx = s.get("tx_idx")
         if ess == "video":
-            return (f"tx{tx}:v" if tx is not None else "v"), "video"
+            return (slot_tx(tx, "v") if tx is not None else "v"), "video"
         if ess == "audio":
             ai = s.get("audio_idx", 0)
-            return (f"tx{tx}:a{ai}" if tx is not None else f"a:{ai}"), "audio"
+            return (slot_tx(tx, "a%d" % ai) if tx is not None else slot_rx("a", ai)), "audio"
         if ess == "anc":
-            return ((f"tx{tx}:d" if tx is not None else None), "data")
+            return ((slot_tx(tx, "d") if tx is not None else None), "data")
     else:
         idx = s.get("recv_idx", 0)
-        if ess == "video": return f"v:{idx}", "video"
-        if ess == "audio": return f"a:{idx}", "audio"
-        if ess == "anc":   return f"d:{idx}", "data"
+        if ess == "video": return slot_rx("v", idx), "video"
+        if ess == "audio": return slot_rx("a", idx), "audio"
+        if ess == "anc":   return slot_rx("d", idx), "data"
     return None, None
 
 
@@ -1436,27 +1437,27 @@ def _container_slot_keys(params, kind):
     if kind == "receiver":
         # Slot_keys = idx réels des flux ACTIFS (rx_flows fait foi ; repli legacy via active_flows).
         rxf = _iof.active_flows(params, "rx")
-        out["video"] = [f"v:{f['idx']}" for f in rxf if f["essence"] == "video"]
-        out["audio"] = [f"a:{f['idx']}" for f in rxf if f["essence"] == "audio"]
-        out["data"]  = [f"d:{f['idx']}" for f in rxf if f["essence"] == "anc"]
+        out["video"] = [slot_rx("v", f["idx"]) for f in rxf if f["essence"] == "video"]
+        out["audio"] = [slot_rx("a", f["idx"]) for f in rxf if f["essence"] == "audio"]
+        out["data"]  = [slot_rx("d", f["idx"]) for f in rxf if f["essence"] == "anc"]
     else:                                              # sender
         if params.get("video"):
             out["video"].append("v")
         for ai in range(len(params.get("audios") or [])):
-            out["audio"].append(f"a:{ai}")
+            out["audio"].append(slot_rx("a", ai))
         tx_full = params.get("tx_slots") or []
         atc = params.get("active_tx_count")
         n_tx = min(int(atc if atc is not None else len(tx_full)), len(tx_full))
         for i in range(n_tx):
             ts = tx_full[i] or {}
             if not ts.get("video_off"):           # slot audio-seul / ANC-seul : pas de clé vidéo
-                out["video"].append(f"tx{i}:v")
+                out["video"].append(slot_tx(i, "v"))
             # Plus de cap à 2 : autant de clés audio que de flux audio attachés au slot.
             for ai, acfg in enumerate(ts.get("audios") or []):
                 if (acfg or {}).get("multicast_ip"):
-                    out["audio"].append(f"tx{i}:a{ai}")
+                    out["audio"].append(slot_tx(i, "a%d" % ai))
             if ts.get("anc_multicast_ip"):
-                out["data"].append(f"tx{i}:d")
+                out["data"].append(slot_tx(i, "d"))
     return out
 
 
@@ -1492,14 +1493,14 @@ def _bundle_mappings(params, kind, pool, include):
     for vk in video_keys:
         if vk.startswith("v:"):                       # RX
             g = _slot_order(vk)
-            a_members = [f"a:{g + j * n_video}" for j in range(ac)]
-            d_member = f"d:{g}"
+            a_members = [slot_rx("a", g + j * n_video) for j in range(ac)]
+            d_member = slot_rx("d", g)
         elif vk.startswith("tx") and vk.endswith(":v"):  # TX moteur
             i = int(vk[2:vk.index(":")])
-            a_members = [f"tx{i}:a{j}" for j in range(ac)]
-            d_member = f"tx{i}:d"
+            a_members = [slot_tx(i, "a%d" % j) for j in range(ac)]
+            d_member = slot_tx(i, "d")
         else:                                          # sender vidéo global ("v")
-            a_members = [f"a:{j}" for j in range(ac)]
+            a_members = [slot_rx("a", j) for j in range(ac)]
             d_member = None
         if inc_v:
             if vi < len(pv): mappings.append({"slot_key": vk, "resource_id": pv[vi]})
