@@ -2271,7 +2271,15 @@ def repush_subscriptions(vmid):
     ⚠ Il comptait auparavant les APPELS, pas les livraisons — `_notify_agent` ne rendant rien et
     avalant ses exceptions. Résultat vécu le 2026-08-15 : « 16 abonnements re-poussés » dans le
     journal, ZÉRO fichier SDP écrit côté moteur, et six entrées vidéo mortes pendant que la
-    restauration se déclarait réussie. Un compteur qui ne peut pas décroître ne mesure rien."""
+    restauration se déclarait réussie. Un compteur qui ne peut pas décroître ne mesure rien.
+
+    ⚠ CE MÉCANISME N'A JAMAIS ÉTÉ EN CAUSE dans les redéploiements laborieux du 2026-08-05..15,
+    contrairement à ce qu'affirme le message du commit qui a corrigé le compteur. La cause réelle
+    était le MODE DE DÉPLOIEMENT : des recréations lancées par script d'ops, hors du process Flask,
+    qui ne font pas tourner le thread `resync_moteur` — donc personne n'appelait ceci. Vérifié
+    depuis, par l'API : « 16/16 abonnement(s) RX livré(s) », 6/6 sessions RX actives sur un moteur
+    FRAÎCHEMENT RECRÉÉ (le seul vrai test, alors annoncé comme non fait). Diagnostiquer un
+    redéploiement muet en regardant d'abord PAR OÙ il a été lancé."""
     from app.addressing import get_container_ip
     from app import deploy
     ip = get_container_ip(vmid)
