@@ -224,6 +224,105 @@ def _build_sender_resource(snd_id, did, fid, vmid, label, version, legs=1):
     }
 
 
+# ─── BCP-004-01 « Receiver Capabilities » ────────────────────────────────────────────────────
+# Release v1.0.0 (tag vérifié le 2026-08-15 — contrairement à BCP-007-03, celle-ci est publiée).
+# Sans `constraint_sets`, nos receivers n'annoncent que `caps.media_types` : un contrôleur ne peut
+# pas savoir si un Rx accepte du 1080p50 ou du 2160p59.94, il TENTE la connexion et découvre après
+# coup. Avec, il le sait avant de câbler — et il peut le montrer dans sa grille de commutation.
+#
+# ★ D'où viennent les valeurs : du réglage `video_formats` (Réglages → Vidéo), source UNIQUE des
+# formats du site, lue par `app.video_formats`. RIEN n'est codé en dur ici — un site qui déclare
+# d'autres formats voit ses receivers les annoncer, et un format retiré des réglages disparaît des
+# capacités. Annoncer une liste figée serait pire que ne rien annoncer : un contrôleur REFUSERAIT
+# de câbler une source parfaitement valide.
+_CAP = "urn:x-nmos:cap:"
+
+
+_cs_video_cache = {}        # texte brut du réglage → liste de Constraint Sets déjà construite
+
+
+def _video_constraint_sets():
+    """Un Constraint Set par format vidéo déclaré au site. Liste vide si le réglage est vide —
+    l'appelant n'annonce alors PAS `constraint_sets` du tout (cf. `_build_receiver_resource`).
+
+    MÉMOÏSÉ sur le texte du réglage, pour deux raisons de fond et pas seulement de coût : un
+    moteur 2110 publie ~16 receivers vidéo, et sans cache (a) on relisait et re-parsait le réglage
+    seize fois par annonce, (b) surtout, l'avertissement sur un format incohérent sortait SEIZE
+    FOIS par cycle d'annonce, indéfiniment. Un journal qui répète la même anomalie des milliers de
+    fois ne la signale plus, il la noie — et c'est ce même mécanisme qui a déjà mangé la rétention
+    des alertes sur ce projet. Le réglage change ⇒ la clé change ⇒ on re-parse et on re-signale."""
+    from app import video_formats as _vf
+    from app import settings as _s
+    brut = _s.get("video_formats") or ""
+    if brut in _cs_video_cache:
+        return _cs_video_cache[brut]
+    sets = []
+    for f in _vf.formats(brut):
+        souci = _vf.anomalie(f)
+        if souci:
+            # On n'annonce pas une capacité bâtie sur une ligne incohérente, et on le DIT : un
+            # format simplement absent des capacités ferait refuser la source par le contrôleur,
+            # sans que personne ne sache pourquoi (cf. le rejet silencieux qu'on veut éviter).
+            log.warning("BCP-004-01 : format ignoré dans les capacités des receivers — %s", souci)
+            continue
+        num, den = _vf.frame_rate(f)
+        cs = {
+            f"{_CAP}meta:label":            f["label"],
+            f"{_CAP}format:media_type":     {"enum": ["video/raw"]},
+            f"{_CAP}format:frame_width":    {"enum": [f["w"]]},
+            f"{_CAP}format:frame_height":   {"enum": [f["h"]]},
+            f"{_CAP}format:grain_rate":     {"enum": [{"numerator": num, "denominator": den}]},
+            f"{_CAP}format:interlace_mode": {"enum": [_vf.interlace_mode(f)]},
+            f"{_CAP}format:color_sampling": {"enum": [_vf.color_sampling(f)]},
+            f"{_CAP}format:component_depth": {"enum": [f["bit_depth"]]},
+        }
+        espace = _vf.colorspace(f)
+        if espace:
+            cs[f"{_CAP}format:colorspace"] = {"enum": [espace]}
+        # `transfer_characteristic` : DÉLIBÉRÉMENT absent. Le réglage ne porte pas la courbe de
+        # transfert, et une contrainte omise vaut « pas de contrainte » là où une contrainte
+        # devinée (« SDR ») ferait rejeter une source HLG ou PQ par ailleurs acceptable.
+        sets.append(cs)
+    _cs_video_cache.clear()          # borne le cache : un seul réglage vit à la fois
+    _cs_video_cache[brut] = sets
+    return sets
+
+
+def _audio_constraint_sets():
+    """Constraint Set audio. Valeurs prises sur le moteur, pas sur le réglage : `A_CHANNELS = 8`,
+    L24/48 kHz sont FIXES dans `plugins/2110_io/docker/controller.py` (le RX écrit du 8 canaux L24
+    tel quel dans le shm). D'où un `enum` à 8 et non un `maximum` : le moteur ne sait pas recevoir
+    autre chose, annoncer « au plus 8 » laisserait croire qu'un flux 2 canaux passerait.
+
+    `packet_time` n'est PAS annoncé : `A_PTIME_DEF` est surchargeable par variable d'environnement
+    (`AUDIO_PTIME`), donc le contrôleur ne peut pas en faire une vérité de site."""
+    return [{
+        f"{_CAP}meta:label":            "ST 2110-30 — 8 canaux L24 48 kHz",
+        f"{_CAP}format:media_type":     {"enum": ["audio/L24"]},
+        f"{_CAP}format:channel_count":  {"enum": [8]},
+        f"{_CAP}format:sample_rate":    {"enum": [{"numerator": 48000, "denominator": 1}]},
+    }]
+
+
+def _receiver_caps(fmt, media_types):
+    """`caps` d'un receiver — avec `constraint_sets` + `version` quand on a quelque chose de VRAI
+    à déclarer (BCP-004-01 exige les deux ensemble, jamais l'un sans l'autre).
+
+    Le format `data` (ANC, `video/smpte291`) n'a pas de contrainte exprimable dans le registre des
+    capacités : on s'en tient à `media_types`, plutôt que d'inventer un Constraint Set vide qui
+    n'apprendrait rien à personne."""
+    caps = {"media_types": media_types}
+    sets = {"video": _video_constraint_sets, "audio": _audio_constraint_sets}.get(fmt)
+    sets = sets() if sets else []
+    if sets:
+        caps["constraint_sets"] = sets
+        # `version` de caps : horodatage TAI du dernier changement des capacités. Il suit ici la
+        # version de la ressource — nos capacités ne bougent que quand les réglages bougent, et un
+        # changement de réglage passe par une ré-annonce complète.
+        caps["version"] = _tai_version()
+    return caps
+
+
 def _build_receiver_resource(rid, did, vmid, recv_idx, label, version, fmt="video", legs=1):
     media_types = {"video": ["video/raw"], "audio": ["audio/L24"], "data": ["video/smpte291"]}[fmt]
     return {
@@ -236,7 +335,7 @@ def _build_receiver_resource(rid, did, vmid, recv_idx, label, version, fmt="vide
         "transport": "urn:x-nmos:transport:rtp.mcast",
         "format": f"urn:x-nmos:format:{fmt}",
         "subscription": {"sender_id": None, "active": False},
-        "caps": {"media_types": media_types},
+        "caps": _receiver_caps(fmt, media_types),
         "interface_bindings": _iface_bindings(vmid, legs),
     }
 
