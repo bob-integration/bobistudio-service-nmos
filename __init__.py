@@ -2144,14 +2144,30 @@ def _extract_mcast_info(active, smpte_2022_7=False):
     return [info0, info1]
 
 def _notify_agent(vmid, recv_idx, essence, enable, sdp, mcast_info):
-    """POST l'info de subscription à l'agent du container (port 8081)."""
+    """POST l'info de subscription à l'agent du container (port 8081).
+
+    Renvoie True SEULEMENT si l'agent a répondu 200. Cette valeur de retour EXISTE parce que
+    l'appelant en a besoin : sans elle, `repush_subscriptions` comptait ses appels et non ses
+    livraisons, et annonçait « 16 abonnements re-poussés » alors que ZÉRO n'était arrivé. Cf.
+    l'incident du 2026-08-15, où le moteur est resté sans aucune entrée vidéo pendant que la
+    restauration se déclarait réussie."""
     from app.addressing import get_container_ip
     from app.database import db_add_alert
     ip = get_container_ip(vmid)
     if not ip:
         log.warning(f"nmos: pas d'IP pour container {vmid}, subscription ignorée")
         db_add_alert(f"NMOS subscription receiver #{recv_idx + 1}/{essence} container {vmid}: IP introuvable", "warning", vmid=vmid, kind="rx_stall")
-        return
+        return False
+    # ⚠ CONTRAT DE L'AGENT : `/nmos/subscribe` n'écrit le fichier SDP que si `enabled ET sdp`
+    # (cf. plugins/2110_io/docker/controller.py) — et répond `{"ok": true}` dans TOUS les cas.
+    # Une activation sans SDP est donc un NO-OP qui se présente comme un succès, et elle DÉTRUIT
+    # la session existante au passage. On refuse ici plutôt que de laisser passer.
+    if enable and not sdp:
+        log.warning(f"nmos: activation receiver #{recv_idx + 1}/{essence} container {vmid} SANS SDP — refusée")
+        db_add_alert(f"NMOS receiver #{recv_idx + 1}/{essence} container {vmid} : activation sans SDP "
+                     f"refusée (l'agent l'aurait acceptée sans rien faire, en supprimant la session)",
+                     "warning", vmid=vmid, kind="rx_stall")
+        return False
     if isinstance(mcast_info, list):
         # SMPTE 2022-7 : un unique SDP avec deux sections m= (leg0 + leg1)
         info0, info1 = mcast_info[0], mcast_info[1]
@@ -2196,14 +2212,17 @@ def _notify_agent(vmid, recv_idx, essence, enable, sdp, mcast_info):
             db_add_alert(
                 f"NMOS receiver #{recv_idx + 1}/{essence} container {vmid} → "
                 f"{'subscribe' if enable else 'unsubscribe'}", "info", vmid=vmid, kind="rx_stall")
+            return True
         else:
             log.warning(f"nmos: agent {vmid} a renvoyé {r.status_code}")
             db_add_alert(
                 f"NMOS subscription container {vmid} : agent retour {r.status_code}",
                 "warning", vmid=vmid, kind="agent")
+            return False
     except Exception as e:
         log.warning(f"nmos: notification agent {vmid} échouée : {e}")
         db_add_alert(f"NMOS subscription container {vmid} : agent injoignable ({e})", "warning", vmid=vmid, kind="agent")
+        return False
 
 
 def subscriptions_actives(vmid):
@@ -2247,8 +2266,12 @@ def repush_subscriptions(vmid):
     moteur 2110 recréé met 30-60 s à servir :8081 → les subscribes partaient dans le vide et le
     moteur revenait VIDE, silencieusement).
 
-    Renvoie le nombre d'abonnements POUSSÉS (≠ nombre de sessions réellement créées : la
-    vérification est faite par docker_driver._resync_moteur / metrics)."""
+    Renvoie le nombre d'abonnements RÉELLEMENT LIVRÉS (agent répondu 200).
+
+    ⚠ Il comptait auparavant les APPELS, pas les livraisons — `_notify_agent` ne rendant rien et
+    avalant ses exceptions. Résultat vécu le 2026-08-15 : « 16 abonnements re-poussés » dans le
+    journal, ZÉRO fichier SDP écrit côté moteur, et six entrées vidéo mortes pendant que la
+    restauration se déclarait réussie. Un compteur qui ne peut pas décroître ne mesure rien."""
     from app.addressing import get_container_ip
     from app import deploy
     ip = get_container_ip(vmid)
@@ -2260,17 +2283,29 @@ def repush_subscriptions(vmid):
                      f"(moteur potentiellement VIDE). Redéployer le moteur.", "error", vmid=vmid, kind="agent")
         return 0
     n = 0
+    echecs = []
     entries = subscriptions_actives(vmid)
     for rid, state in entries:
         active = state.get("active") or {}
         sdp = (active.get("transport_file") or {}).get("data")
         dual = len(active.get("transport_params") or []) >= 2
         mcast_info = _extract_mcast_info(active, smpte_2022_7=dual)
-        _notify_agent(state["vmid"], state["recv_idx"], state.get("essence", "video"),
-                      True, sdp, mcast_info)
-        n += 1
+        _ess = state.get("essence", "video")
+        if _notify_agent(state["vmid"], state["recv_idx"], _ess, True, sdp, mcast_info):
+            n += 1
+        else:
+            echecs.append("#%s/%s%s" % (state["recv_idx"] + 1, _ess, "" if sdp else " (sans SDP)"))
+    if echecs:
+        # Une restauration partielle est une PANNE, pas un détail : le moteur redémarre sans les
+        # entrées qu'on croyait rétablies, et plus rien ne le signale ensuite.
+        from app.database import db_add_alert
+        log.error("nmos: %d/%d abonnement(s) NON restauré(s) sur container %s : %s",
+                  len(echecs), len(entries), vmid, ", ".join(echecs))
+        db_add_alert(f"NMOS {vmid} : {len(echecs)}/{len(entries)} abonnement(s) RX NON restauré(s) "
+                     f"({', '.join(echecs[:6])}) — le moteur tourne SANS ces entrées",
+                     "error", vmid=vmid, kind="rx_stall")
     if n:
-        log.info(f"nmos: {n} abonnement(s) RX re-poussé(s) sur container {vmid} après (re)déploiement")
+        log.info(f"nmos: {n}/{len(entries)} abonnement(s) RX livré(s) sur container {vmid} après (re)déploiement")
     return n
 
 
