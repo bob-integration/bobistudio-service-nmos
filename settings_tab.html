@@ -1,129 +1,93 @@
 <div id="protocoles-tab-nmos" class="set-tab-content">
-    <h2>Provider NMOS IS-04 / IS-05</h2>
+    <h2>{{ _('service.nmos.provider_nmos_is_04_is_05') }}</h2>
     <div class="form">
         <div class="row">
             <div class="field" style="align-self:center"><label style="display:flex; align-items:center; gap:var(--space-2)">
                 <input type="checkbox" class="ios-toggle" id="s_nmos_enabled" onchange="_nmosTouch()">
-                Activer le provider NMOS
+                {{ _('service.nmos.activer_le_provider_nmos') }}
             </label></div>
-            <div class="field" style="flex:1; min-width:320px"><label>URL du Registry RDS (vide = mode API-only)</label>
+            <div class="field" style="flex:1; min-width:320px"><label>{{ _('service.nmos.url_du_registry_rds_vide_mode_api_only') }}</label>
                 <input type="text" id="s_nmos_registry_url" class="wide" placeholder="http://192.0.2.x:8235"></div>
             <div class="field"><label>
                 <input type="checkbox" class="ios-toggle" id="s_nmos_mdns" onchange="_nmosTouch()">
-                Annonce mDNS (_nmos-node._tcp)
+                {{ _('service.nmos.annonce_mdns_nmos_node_tcp') }}
             </label></div>
             <div class="field"><label>
                 <input type="checkbox" class="ios-toggle" id="s_nmos_auto_activate" onchange="_nmosTouch()">
-                Activation IS-05 auto des senders distants
+                {{ _('service.nmos.activation_is_05_auto_des_senders_distan') }}
             </label></div>
             <div class="field"><label>
                 <input type="checkbox" class="ios-toggle" id="s_nmos_sdp_source_filter" checked onchange="_nmosTouch()">
-                Filtre de source SSM dans les SDP (a=source-filter)
+                {{ _('service.nmos.filtre_de_source_ssm_dans_les_sdp_a_sour') }}
             </label></div>
         </div>
-        <div class="meta" style="margin-top:var(--space-2)">
-            Annonce la source dans les SDP TX du moteur 2110 → le récepteur fait un join IGMPv3
-            <b>SSM (S,G)</b>. Recommandé sur un fabric SSM-capable (PIM-SSM / NBM).
-            <b>Décocher sur un switch L2 en IGMP snooping pur</b> : le join (S,G) y est enregistré
-            mais jamais forwardé (0 Mbps silencieux) — sans la ligne, le récepteur retombe sur un
-            join (*,G) qui est livré. Appliqué au <b>redéploiement</b> du moteur.
-        </div>
-        <div class="meta" style="margin-top:var(--space-2)">
-            Certains devices 2110 (convertisseurs SDI→IP) exposent une vraie API NMOS IS-04/05 mais
-            n'émettent rien tant que leur propre sender n'a pas reçu le PATCH d'activation IS-05
-            (<code>master_enable</code>) — comportement NMOS standard, pas propriétaire. Si activé,
-            un abonnement RX (SDP collé à la main, sans registry commun) déclenche la découverte
-            mDNS du node du device source et active son sender si besoin. Best-effort, sans impact
-            si le device n'expose pas de node NMOS.
-        </div>
+        <div class="meta" style="margin-top:var(--space-2)">{{ _('service.nmos.annonce_la_source_dans_les_sdp_tx_du_mot')|safe }}</div>
+        <div class="meta" style="margin-top:var(--space-2)">{{ _('service.nmos.certains_devices_2110_convertisseurs_sdi')|safe }}</div>
         <div class="row">
-            <div class="field" style="flex:1"><label>Label du Node</label>
+            <div class="field" style="flex:1"><label>{{ _('service.nmos.label_du_node') }}</label>
                 <input type="text" id="s_nmos_node_label" class="wide" value="Bobi.Studio"></div>
             <div class="field" style="flex:2"><label>Description</label>
                 <input type="text" id="s_nmos_node_description" class="wide"></div>
-            <button class="btn btn-green" onclick="appliquerNmos()">Appliquer</button>
+            <button class="btn btn-green" onclick="appliquerNmos()">{{ _('service.nmos.appliquer') }}</button>
         </div>
         <!-- Préfixe des libellés de ressources. Les Rx/Tx s'appellent « Rx 1 (video) », « Tx 1 (anc) »…
              Le préfixe ne sert qu'à lever une ambiguïté : toutes les ressources du cluster vivent sous
              UN SEUL Device, et chaque moteur numérote ses slots à partir de 1 → deux nœuds exposent
              chacun un « Rx 1 ». D'où l'override par nœud juste en dessous. -->
         <div class="row" style="align-items:flex-end">
-            <div class="field"><label>Préfixe des libellés Rx/Tx</label>
-                <input type="text" id="s_nmos_label_prefix" class="wide" placeholder="(aucun)"></div>
-            <button class="btn btn-green" onclick="appliquerNmos()">Appliquer le préfixe</button>
-            <div class="meta" style="flex:1; min-width:280px">Vide → <code>Rx 1 (video)</code>,
-                <code>Tx 1 (anc)</code>. Avec <code>REGIE-A</code> → <code>REGIE-A Rx 1 (video)</code>.
-                Ne change ni les UUID NMOS, ni les flux MXL, ni les SSRC — <b>aucun abonnement n'est
-                à refaire</b>. En revanche ce préfixe sert aussi de base aux <b>groupes naturels</b>
-                (BCP-002-01) : ceux-ci sont <b>figés à la création</b> de chaque ressource et ne
-                suivront donc PAS un changement de préfixe — c'est voulu, le registre NMOS impose
-                qu'un groupe soit immuable (un contrôleur s'en sert pour bâtir son nommage de
-                production et ne redemandera rien ensuite). Les ressources créées après le
-                changement, elles, porteront le nouveau préfixe.</div>
+            <div class="field"><label>{{ _('service.nmos.prefixe_des_libelles_rx_tx') }}</label>
+                <input type="text" id="s_nmos_label_prefix" class="wide" placeholder="{{ _('service.nmos.aucun_ph') }}"></div>
+            <button class="btn btn-green" onclick="appliquerNmos()">{{ _('service.nmos.appliquer_le_prefixe') }}</button>
+            <div class="meta" style="flex:1; min-width:280px">{{ _('service.nmos.vide_rx_1_video_tx_1_anc_avec_regie_a_re')|safe }}</div>
         </div>
         <div class="row" style="align-items:flex-start">
             <div class="field" style="flex:1">
-                <label>Préfixe par nœud <span class="meta">(vide = hérite du global)</span></label>
+                <label>{{ _('service.nmos.prefixe_par_nud_vide_herite_du_global')|safe }}</label>
                 <div id="nmos_prefix_nodes" class="meta">⏳…</div>
             </div>
-            <div class="meta" style="flex:1; min-width:280px">Indispensable dès qu'un <b>second moteur
-                2110</b> rejoint le cluster : sans préfixe distinct, deux nœuds exposent chacun un
-                « Rx 1 » indiscernable pour un contrôleur tiers.</div>
+            <div class="meta" style="flex:1; min-width:280px">{{ _('service.nmos.indispensable_des_qu_un_second_moteur_21')|safe }}</div>
         </div>
         <div class="row" style="align-items:flex-end">
-            <div class="field"><label>Mode de gestion des ressources</label>
+            <div class="field"><label>{{ _('service.nmos.mode_de_gestion_des_ressources') }}</label>
                 <select id="s_nmos_mode" style="min-width:280px">
-                    <option value="auto">Automatique — chaque conteneur auto-crée ses Rx/Tx</option>
-                    <option value="static">Statique — pool fixe, on câble les conteneurs</option>
+                    <option value="auto">{{ _('service.nmos.automatique_chaque_conteneur_auto_cree_s') }}</option>
+                    <option value="static">{{ _('service.nmos.statique_pool_fixe_on_cable_les_conteneu') }}</option>
                 </select></div>
-            <button class="btn btn-green" onclick="appliquerNmos()">Appliquer le mode</button>
-            <div class="meta" style="flex:1; min-width:260px">En <b>statique</b>, un conteneur 2110 n'expose
-                aucune ressource NMOS tant que ses slots ne sont pas câblés à des Rx/Tx fixes du pool
-                (ci-dessous) — identité NMOS stable au rappel de projet et en multi-nœud.</div>
+            <button class="btn btn-green" onclick="appliquerNmos()">{{ _('service.nmos.appliquer_le_mode') }}</button>
+            <div class="meta" style="flex:1; min-width:260px">{{ _('service.nmos.en_statique_un_conteneur_2110_n_expose_a')|safe }}</div>
         </div>
-        <div class="meta" style="margin-top:var(--space-2)">
-            Endpoints exposés sous <code>/x-nmos/node/v1.3/</code> et <code>/x-nmos/connection/v1.1/</code>.
-            Le Node + ses Devices et Receivers sont enregistrés auprès du RDS configuré, avec heartbeat 5s.
-        </div>
+        <div class="meta" style="margin-top:var(--space-2)">{{ _('service.nmos.endpoints_exposes_sous_x_nmos_node_v1_3_')|safe }}</div>
     </div>
 
-    <h2>Identité de l'appareil (BCP-002-02)</h2>
+    <h2>{{ _('service.nmos.identite_de_l_appareil_bcp_002_02') }}</h2>
     <div class="form">
-        <div class="meta" style="margin-bottom:var(--space-2)">
-            Ce que voit l'ingénieur d'exploitation devant une requête IS-04 qui rend plusieurs
-            appareils au même libellé. Ces trois valeurs sont publiées en tags sur le <b>Node</b> et
-            sur le <b>Device</b>, plus la <b>fonction</b> sur le Device. Elles alimentent aussi le
-            <code>NcDeviceManager</code> d'IS-12 — même source, pour que les deux protocoles ne
-            racontent pas deux appareils différents.
-        </div>
+        <div class="meta" style="margin-bottom:var(--space-2)">{{ _('service.nmos.ce_que_voit_l_ingenieur_d_exploitation_d')|safe }}</div>
         <div class="row" style="align-items:flex-end">
-            <div class="field"><label>Fabricant</label>
+            <div class="field"><label>{{ _('service.nmos.fabricant') }}</label>
                 <input type="text" id="s_nmos_asset_manufacturer" class="wide" placeholder="BOBI SAS"></div>
-            <div class="field"><label>Produit</label>
+            <div class="field"><label>{{ _('service.nmos.produit') }}</label>
                 <input type="text" id="s_nmos_asset_product" class="wide" placeholder="Bobi.Studio"></div>
-            <div class="field"><label>Fonction du Device</label>
+            <div class="field"><label>{{ _('service.nmos.fonction_du_device') }}</label>
                 <input type="text" id="s_nmos_asset_function" class="wide" placeholder="Gateway"></div>
-            <button class="btn btn-green" onclick="appliquerNmosAsset()">Appliquer</button>
+            <button class="btn btn-green" onclick="appliquerNmosAsset()">{{ _('service.nmos.appliquer') }}</button>
         </div>
         <div class="row">
-            <div class="field" style="flex:1"><label>Identifiant d'instance <span class="meta">(non modifiable)</span></label>
+            <div class="field" style="flex:1"><label>{{ _('service.nmos.identifiant_d_instance_non_modifiable')|safe }}</label>
                 <div id="nmos_asset_instance" class="meta" style="font-family:var(--font-mono); font-size:0.8em">—</div></div>
-            <div class="meta" style="flex:1; min-width:280px">C'est l'UUID du Node. La BCP exige que
-                le triplet <i>fabricant + produit + instance</i> soit unique ; le rendre saisissable
-                reviendrait à offrir de le rendre ambigu.</div>
+            <div class="meta" style="flex:1; min-width:280px">{{ _('service.nmos.c_est_l_uuid_du_node_la_bcp_exige_que_le')|safe }}</div>
         </div>
     </div>
 
-    <h2>État du Node</h2>
+    <h2>{{ _('service.nmos.etat_du_node') }}</h2>
     <div class="form">
         <div class="row">
-            <div class="field"><label>Statut</label>
+            <div class="field"><label>{{ _('service.nmos.statut') }}</label>
                 <div id="nmos_status_badge" class="meta">—</div></div>
             <div class="field"><label>Registry</label>
                 <div id="nmos_status_registry" class="meta">—</div></div>
             <div class="field"><label>Node ID</label>
                 <div id="nmos_status_node_id" class="meta" style="font-family: var(--font-mono); font-size: 0.75em">—</div></div>
-            <div class="field"><label>Dernier heartbeat</label>
+            <div class="field"><label>{{ _('service.nmos.dernier_heartbeat') }}</label>
                 <div id="nmos_status_hb" class="meta">—</div></div>
             <div class="field"><label>Devices / Receivers</label>
                 <div id="nmos_status_counts" class="meta">—</div></div>
@@ -131,118 +95,90 @@
         <div id="nmos_status_error" class="meta" style="margin-top:var(--space-2); color: var(--status-stopped-fg)"></div>
     </div>
 
-    <h2>Supervision IS-12 (BCP-008)</h2>
+    <h2>{{ _('service.nmos.supervision_is_12_bcp_008') }}</h2>
     <div class="form">
-        <div class="meta" style="margin-bottom:var(--space-2)">
-            <b>IS-12</b> est le protocole de contrôle NMOS (WebSocket). Il publie ici un
-            <b>moniteur par Receiver et par Sender</b> conforme à <b>BCP-008-01/02</b> : état du
-            lien, de la connexion, du flux, de la synchronisation PTP, compteurs et messages de
-            cause — lisibles par n'importe quel contrôleur tiers, sans API propriétaire.
-            <b>Lecture seule</b> : aucun objet publié ne permet de router ni de démarrer quoi que
-            ce soit. Le point d'accès est annoncé aux contrôleurs dans le tableau
-            <code>controls</code> des Devices IS-04.
-        </div>
+        <div class="meta" style="margin-bottom:var(--space-2)">{{ _('service.nmos.is_12_est_le_protocole_de_controle_nmos_')|safe }}</div>
         <div class="row" style="align-items:flex-end">
             <div class="field" style="align-self:center"><label style="display:flex; align-items:center; gap:var(--space-2)">
                 <input type="checkbox" class="ios-toggle" id="s_nmos_is12_enabled">
-                Activer IS-12
+                {{ _('service.nmos.activer_is_12') }}
             </label></div>
-            <div class="field"><label>Port WebSocket</label>
+            <div class="field"><label>{{ _('service.nmos.port_websocket') }}</label>
                 <input type="number" id="s_nmos_is12_port" class="num-stepper" min="1" max="65535" value="5010"></div>
-            <button class="btn btn-green" onclick="appliquerNmosIs12()">Appliquer</button>
-            <div class="field" style="flex:1; min-width:280px"><label>Point d'accès</label>
+            <button class="btn btn-green" onclick="appliquerNmosIs12()">{{ _('service.nmos.appliquer') }}</button>
+            <div class="field" style="flex:1; min-width:280px"><label>{{ _('service.nmos.point_d_acces') }}</label>
                 <div id="nmos_is12_href" class="meta" style="font-family:var(--font-mono); font-size:0.8em">—</div></div>
         </div>
-        <div class="meta">
-            Port distinct de l'UI (5000) : le serveur de l'orchestrateur ne sait pas basculer une
-            connexion HTTP en WebSocket, et la spec IS-12 prévoit justement une URL à part.
-            Pensez au pare-feu du contrôleur.
-        </div>
+        <div class="meta">{{ _('service.nmos.port_distinct_de_l_ui_5000_le_serveur_de') }}</div>
         <div class="row" style="align-items:flex-end; margin-top:var(--space-2)">
             <div class="field" style="align-self:center"><label style="display:flex; align-items:center; gap:var(--space-2)">
                 <input type="checkbox" class="ios-toggle" id="s_nmos_is14_enabled" onchange="appliquerNmosIs14()">
-                Activer IS-14 (Configuration API, en HTTP)
+                {{ _('service.nmos.activer_is_14_configuration_api_en_http') }}
             </label></div>
-            <div class="field" style="flex:1; min-width:300px"><label>Point d'accès</label>
+            <div class="field" style="flex:1; min-width:300px"><label>{{ _('service.nmos.point_d_acces') }}</label>
                 <div id="nmos_is14_href" class="meta" style="font-family:var(--font-mono); font-size:0.8em">—</div></div>
         </div>
-        <div class="meta">
-            <b>Le même modèle qu'IS-12</b>, servi en REST sur le port de l'UI — pour un contrôleur
-            qui ne veut pas tenir une WebSocket ouverte. IS-14 apporte en plus la
-            <b>sauvegarde et la restauration</b> du modèle (<code>bulkProperties</code>) : une
-            validation à blanc est possible avant d'appliquer. Les deux protocoles peuvent tourner
-            ensemble — le modèle n'est bâti qu'une fois.
-        </div>
+        <div class="meta">{{ _('service.nmos.le_meme_modele_qu_is_12_servi_en_rest_su')|safe }}</div>
         <div class="row" style="margin-top:var(--space-2)">
             <div class="field"><label>Sessions</label><div id="nmos_is12_sessions" class="meta">—</div></div>
-            <div class="field"><label>Moniteurs</label><div id="nmos_is12_counts" class="meta">—</div></div>
-            <div class="field" style="flex:1"><label>Sans télémétrie</label>
+            <div class="field"><label>{{ _('service.nmos.moniteurs') }}</label><div id="nmos_is12_counts" class="meta">—</div></div>
+            <div class="field" style="flex:1"><label>{{ _('service.nmos.sans_telemetrie') }}</label>
                 <div id="nmos_is12_skipped" class="meta">—</div></div>
         </div>
         <div class="table-wrap" style="margin-top:var(--space-2)">
             <table class="table" id="nmos_is12_table">
                 <thead><tr>
-                    <th>Ressource</th><th>Sens</th><th>Global</th><th>Lien</th>
-                    <th>Connexion / Émission</th><th>Flux / Essence</th><th>PTP</th><th>Cause</th>
+                    <th>{{ _('service.nmos.ressource') }}</th><th>{{ _('service.nmos.sens') }}</th><th>Global</th><th>{{ _('service.nmos.lien') }}</th>
+                    <th>{{ _('service.nmos.connexion_emission') }}</th><th>{{ _('service.nmos.flux_essence') }}</th><th>PTP</th><th>Cause</th>
                 </tr></thead>
                 <tbody id="nmos_is12_tbody"><tr><td colspan="8" class="meta">—</td></tr></tbody>
             </table>
         </div>
-        <div class="meta" style="margin-top:var(--space-2)">
-            <b>Inactif</b> n'est pas une panne : c'est un Receiver sans abonnement IS-05 ou un slot
-            de sortie sans cadence demandée. Les drapeaux de contenu (image figée, noir, silence)
-            ne dégradent le flux que s'ils sont <b>armés sur la source</b> (page I/O Sources) —
-            une mire figée volontairement reste saine.
-        </div>
+        <div class="meta" style="margin-top:var(--space-2)">{{ _('service.nmos.inactif_n_est_pas_une_panne_c_est_un_rec')|safe }}</div>
     </div>
 
-    <h2>Registre de ressources (cluster)</h2>
+    <h2>{{ _('service.nmos.registre_de_ressources_cluster') }}</h2>
     <div class="form">
-        <div class="meta" style="margin-bottom:var(--space-2)">
-            Liste NMOS de <b>niveau cluster</b> : chaque sender/receiver garde son UUID quel que soit le
-            conteneur qui le sert (lié par <code>instance_uuid</code>). Une ressource qu'aucun conteneur
-            ne sert reste <b>exposée</b> (orpheline, inactive) — le routage du contrôleur survit. Le
-            relabel est persistant ; on peut supprimer une orpheline ou en créer une à l'avance.
-        </div>
+        <div class="meta" style="margin-bottom:var(--space-2)">{{ _('service.nmos.liste_nmos_de_niveau_cluster_chaque_send')|safe }}</div>
         <div class="row">
-            <div class="field" style="flex:1"><label>Label du Device cluster</label>
+            <div class="field" style="flex:1"><label>{{ _('service.nmos.label_du_device_cluster') }}</label>
                 <input type="text" id="s_nmos_cluster_label" class="wide"></div>
-            <button class="btn btn-green" onclick="nmosApplyClusterLabel()" style="align-self:flex-end">Appliquer le label</button>
+            <button class="btn btn-green" onclick="nmosApplyClusterLabel()" style="align-self:flex-end">{{ _('service.nmos.appliquer_le_label') }}</button>
         </div>
         <div id="nmos_registry_msg" class="meta" style="margin:var(--space-2) 0"></div>
         <!-- Barre filtres + recherche -->
         <div class="filter-bar" style="margin-bottom:var(--space-2)">
             <span class="meta" id="nmos_reg_count">—</span>
             <span class="filter-sep"></span>
-            <input type="search" class="filter-search" id="nmos_reg_search" placeholder="Rechercher (libellé, UUID, mcast)…" oninput="nmosSetSearch(this.value)">
+            <input type="search" class="filter-search" id="nmos_reg_search" placeholder="{{ _('service.nmos.rechercher_libelle_uuid_mcast') }}" oninput="nmosSetSearch(this.value)">
             <span class="filter-sep"></span>
             <span class="filter-label">Type</span>
-            <button class="filter-chip active" data-grp="kind" data-val="all" onclick="nmosSetFilter('kind','all')">Tous</button>
+            <button class="filter-chip active" data-grp="kind" data-val="all" onclick="nmosSetFilter('kind','all')">{{ _('service.nmos.tous') }}</button>
             <button class="filter-chip" data-grp="kind" data-val="receiver" onclick="nmosSetFilter('kind','receiver')">Rx</button>
             <button class="filter-chip" data-grp="kind" data-val="sender" onclick="nmosSetFilter('kind','sender')">Tx</button>
             <span class="filter-sep"></span>
             <span class="filter-label">Essence</span>
-            <button class="filter-chip active" data-grp="essence" data-val="all" onclick="nmosSetFilter('essence','all')">Toutes</button>
-            <button class="filter-chip" data-grp="essence" data-val="video" onclick="nmosSetFilter('essence','video')">Vidéo</button>
+            <button class="filter-chip active" data-grp="essence" data-val="all" onclick="nmosSetFilter('essence','all')">{{ _('service.nmos.toutes') }}</button>
+            <button class="filter-chip" data-grp="essence" data-val="video" onclick="nmosSetFilter('essence','video')">{{ _('service.nmos.video') }}</button>
             <button class="filter-chip" data-grp="essence" data-val="audio" onclick="nmosSetFilter('essence','audio')">Audio</button>
             <button class="filter-chip" data-grp="essence" data-val="data" onclick="nmosSetFilter('essence','data')">ANC</button>
             <span class="filter-sep"></span>
-            <span class="filter-label">État</span>
-            <button class="filter-chip active" data-grp="etat" data-val="all" onclick="nmosSetFilter('etat','all')">Tous</button>
-            <button class="filter-chip" data-grp="etat" data-val="served" onclick="nmosSetFilter('etat','served')">Servi</button>
-            <button class="filter-chip" data-grp="etat" data-val="orphan" onclick="nmosSetFilter('etat','orphan')">Orphelin</button>
-            <button class="filter-chip" data-grp="etat" data-val="subscribed" onclick="nmosSetFilter('etat','subscribed')">Abonné</button>
-            <button class="filter-chip" data-grp="etat" data-val="pool" onclick="nmosSetFilter('etat','pool')">Pool fixe</button>
+            <span class="filter-label">{{ _('service.nmos.etat') }}</span>
+            <button class="filter-chip active" data-grp="etat" data-val="all" onclick="nmosSetFilter('etat','all')">{{ _('service.nmos.tous') }}</button>
+            <button class="filter-chip" data-grp="etat" data-val="served" onclick="nmosSetFilter('etat','served')">{{ _('service.nmos.servi') }}</button>
+            <button class="filter-chip" data-grp="etat" data-val="orphan" onclick="nmosSetFilter('etat','orphan')">{{ _('service.nmos.orphelin') }}</button>
+            <button class="filter-chip" data-grp="etat" data-val="subscribed" onclick="nmosSetFilter('etat','subscribed')">{{ _('service.nmos.abonne') }}</button>
+            <button class="filter-chip" data-grp="etat" data-val="pool" onclick="nmosSetFilter('etat','pool')">{{ _('service.nmos.pool_fixe') }}</button>
         </div>
         <div class="table-wrap">
         <table id="nmos_registry_table">
             <thead><tr>
                 <th class="th-sort" onclick="triNmos('kind')" role="button" tabindex="0">Type <span class="ind" id="nmos-ind-kind"></span></th>
                 <th class="th-sort" onclick="triNmos('essence')" role="button" tabindex="0">Essence <span class="ind" id="nmos-ind-essence"></span></th>
-                <th class="th-sort" onclick="triNmos('label')" role="button" tabindex="0">Libellé <span class="ind" id="nmos-ind-label"></span></th>
+                <th class="th-sort" onclick="triNmos('label')" role="button" tabindex="0">{{ _('service.nmos.libelle') }} <span class="ind" id="nmos-ind-label"></span></th>
                 <th>UUID</th>
-                <th class="th-sort" onclick="triNmos('serving')" role="button" tabindex="0">Servi par <span class="ind" id="nmos-ind-serving"></span></th>
-                <th class="th-sort" onclick="triNmos('etat')" role="button" tabindex="0">État <span class="ind" id="nmos-ind-etat"></span></th>
+                <th class="th-sort" onclick="triNmos('serving')" role="button" tabindex="0">{{ _('service.nmos.servi_par') }} <span class="ind" id="nmos-ind-serving"></span></th>
+                <th class="th-sort" onclick="triNmos('etat')" role="button" tabindex="0">{{ _('service.nmos.etat') }} <span class="ind" id="nmos-ind-etat"></span></th>
                 <th class="th-sort" onclick="triNmos('mcast')" role="button" tabindex="0">Transport <span class="ind" id="nmos-ind-mcast"></span></th>
                 <th>SDP</th>
                 <th></th>
@@ -252,80 +188,77 @@
         </div>
 
         <details style="margin-top:var(--space-3)">
-            <summary style="cursor:pointer; font-weight:600">+ Créer une ressource (réservation)</summary>
+            <summary style="cursor:pointer; font-weight:600">{{ _('service.nmos.creer_une_ressource_reservation') }}</summary>
             <div class="row" style="margin-top:var(--space-2); flex-wrap:wrap; gap:var(--space-2); align-items:flex-end">
                 <div class="field"><label>Type</label>
                     <select id="nmos_new_kind"><option value="sender">Sender</option><option value="receiver">Receiver</option></select></div>
                 <div class="field"><label>Essence</label>
-                    <select id="nmos_new_essence"><option value="video">Vidéo</option><option value="audio">Audio</option><option value="data">ANC / Data</option></select></div>
-                <div class="field" style="flex:1; min-width:180px"><label>Libellé</label>
-                    <input type="text" id="nmos_new_label" placeholder="Caméra 1"></div>
+                    <select id="nmos_new_essence"><option value="video">{{ _('service.nmos.video') }}</option><option value="audio">Audio</option><option value="data">ANC / Data</option></select></div>
+                <div class="field" style="flex:1; min-width:180px"><label>{{ _('service.nmos.libelle') }}</label>
+                    <input type="text" id="nmos_new_label" placeholder="{{ _('service.nmos.camera_1') }}"></div>
                 <div class="field"><label>Multicast</label>
                     <input type="text" id="nmos_new_mcast" placeholder="239.10.10.1" style="width:130px"></div>
                 <div class="field"><label>Port</label>
                     <input type="number" id="nmos_new_port" placeholder="5000" style="width:90px"></div>
-                <button class="btn btn-green" onclick="nmosRegistryCreate()">Créer</button>
+                <button class="btn btn-green" onclick="nmosRegistryCreate()">{{ _('service.nmos.creer') }}</button>
             </div>
         </details>
 
         <!-- Sauvegarde / rappel / export-import de la config NMOS (UUID préservés) -->
         <div class="row" style="flex-wrap:wrap; gap:var(--space-2); align-items:center; margin-top:var(--space-3); padding-top:var(--space-2); border-top:1px solid var(--border-soft)">
-            <label style="font-weight:600">Sauvegarde / rappel</label>
-            <button class="btn btn-sm" onclick="nmosConfigExport()" title="Télécharge le pool + les bindings + le mode en JSON (UUID inclus)">Exporter</button>
-            <button class="btn btn-sm" onclick="document.getElementById('nmos_import_file').click()" title="Réimporte un fichier exporté en conservant les UUID (ne casse pas le routage NMOS)">Importer…</button>
+            <label style="font-weight:600">{{ _('service.nmos.sauvegarde_rappel') }}</label>
+            <button class="btn btn-sm" onclick="nmosConfigExport()" title="{{ _('service.nmos.telecharge_le_pool_les_bindings_le_mode_') }}">{{ _('service.nmos.exporter') }}</button>
+            <button class="btn btn-sm" onclick="document.getElementById('nmos_import_file').click()" title="{{ _('service.nmos.reimporte_un_fichier_exporte_en_conserva') }}">{{ _('service.nmos.importer') }}</button>
             <input type="file" id="nmos_import_file" accept=".json,application/json" style="display:none" onchange="nmosConfigImport(this)">
-            <label class="toggle-inline" title="Supprime d'abord les ressources pool absentes du fichier/snapshot"><input type="checkbox" class="ios-toggle" id="nmos_import_replace"> Remplacer</label>
-            <label class="toggle-inline" title="Restaure aussi les câblages des conteneurs"><input type="checkbox" class="ios-toggle" id="nmos_import_bindings" checked> Restaurer les câblages</label>
+            <label class="toggle-inline" title="{{ _('service.nmos.supprime_d_abord_les_ressources_pool_abs') }}"><input type="checkbox" class="ios-toggle" id="nmos_import_replace"> {{ _('service.nmos.remplacer') }}</label>
+            <label class="toggle-inline" title="{{ _('service.nmos.restaure_aussi_les_cablages_des_conteneu') }}"><input type="checkbox" class="ios-toggle" id="nmos_import_bindings" checked> {{ _('service.nmos.restaurer_les_cablages') }}</label>
             <span class="filter-sep"></span>
-            <button class="btn btn-red btn-sm" onclick="nmosDeleteAll()" title="Vide tout le registre NMOS (pool compris) + les câblages. Les UUID sont perdus.">Tout supprimer</button>
+            <button class="btn btn-red btn-sm" onclick="nmosDeleteAll()" title="{{ _('service.nmos.vide_tout_le_registre_nmos_pool_compris_') }}">{{ _('service.nmos.tout_supprimer') }}</button>
         </div>
         <!-- Snapshots nommés rappelables d'un clic -->
         <div class="row" style="flex-wrap:wrap; gap:var(--space-2); align-items:center; margin-top:var(--space-2)">
-            <input type="text" id="nmos_snap_name" placeholder="Nom du snapshot (ex : Plateau A)" style="min-width:220px">
-            <button class="btn btn-sm" onclick="nmosSnapSave()">Sauvegarder</button>
+            <input type="text" id="nmos_snap_name" placeholder="{{ _('service.nmos.nom_du_snapshot_ex_plateau_a') }}" style="min-width:220px">
+            <button class="btn btn-sm" onclick="nmosSnapSave()">{{ _('service.nmos.sauvegarder') }}</button>
             <span class="meta" id="nmos_snap_list">—</span>
         </div>
         <div id="nmos_config_msg" class="meta" style="margin:var(--space-2) 0"></div>
     </div>
 
-    <h2>Pool fixe & affectation en masse</h2>
+    <h2>{{ _('service.nmos.pool_fixe_affectation_en_masse') }}</h2>
     <div class="form">
-        <div class="meta" style="margin-bottom:var(--space-2)">
-            Crée un <b>pool</b> de Rx/Tx fixes, puis câble un conteneur 2110 <b>par canal</b>
-            (Vidéo, audio, ANC ensemble) en un clic. Idéal en mode <b>statique</b>.
-        </div>
+        <div class="meta" style="margin-bottom:var(--space-2)">{{ _('service.nmos.cree_un_pool_de_rx_tx_fixes_puis_cable_u')|safe }}</div>
         <!-- Sens unique (Rx | Tx) : gouverne la création de pool ET l'affectation ci-dessous -->
         <div class="row" style="align-items:center; gap:var(--space-2); margin-bottom:var(--space-2)">
-            <label style="font-weight:600">Sens</label>
-            <button class="filter-chip active" id="nmos_kind_receiver" onclick="nmosSetKind('receiver')">Rx (récepteurs)</button>
-            <button class="filter-chip" id="nmos_kind_sender" onclick="nmosSetKind('sender')">Tx (émetteurs)</button>
-            <span class="meta">le pool créé et l'affectation portent sur ce sens</span>
+            <label style="font-weight:600">{{ _('service.nmos.sens') }}</label>
+            <button class="filter-chip active" id="nmos_kind_receiver" onclick="nmosSetKind('receiver')">{{ _('service.nmos.rx_recepteurs') }}</button>
+            <button class="filter-chip" id="nmos_kind_sender" onclick="nmosSetKind('sender')">{{ _('service.nmos.tx_emetteurs') }}</button>
+            <span class="meta">{{ _('service.nmos.le_pool_cree_et_l_affectation_portent_su') }}</span>
         </div>
         <!-- Création de pool PAR CANAL : N canaux × (Vidéo + N audio + ANC) -->
         <div class="row" style="flex-wrap:wrap; gap:var(--space-2); align-items:flex-end">
-            <div class="field"><label>Canaux</label>
+            <div class="field"><label>{{ _('service.nmos.canaux') }}</label>
                 <input type="number" id="nmos_pool_count" value="6" min="1" max="256" style="width:80px"></div>
-            <div class="field"><label>Composition du canal</label>
+            <div class="field"><label>{{ _('service.nmos.composition_du_canal') }}</label>
                 <div class="meta" style="display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin:0">
-                    <label class="toggle-inline"><input type="checkbox" class="ios-toggle" id="nmos_pool_video" checked> Vidéo</label>
+                    <label class="toggle-inline"><input type="checkbox" class="ios-toggle" id="nmos_pool_video" checked> {{ _('service.nmos.video') }}</label>
                     <label class="toggle-inline"><input type="checkbox" class="ios-toggle" id="nmos_pool_audio" checked> Audio</label>
                     <select id="nmos_pool_audio_count" style="width:auto; padding:2px 6px"><option value="1">×1</option><option value="2">×2</option></select>
                     <label class="toggle-inline"><input type="checkbox" class="ios-toggle" id="nmos_pool_anc"> ANC</label>
                 </div></div>
-            <div class="field" style="flex:1; min-width:150px"><label>Préfixe (facultatif)</label>
+            <div class="field" style="flex:1; min-width:150px"><label>{{ _('service.nmos.prefixe_facultatif') }}</label>
                 <input type="text" id="nmos_pool_prefix" placeholder="ex : Projet (vide = Tx_05)"></div>
-            <button class="btn btn-green" onclick="nmosBulkCreatePool()">Créer le pool</button>
-            <button class="btn" onclick="nmosPurgeOrphans()" title="Supprime les Rx/Tx auto-créés des conteneurs disparus (garde le pool fixe, les servis et les abonnés)">Purger les orphelins</button>
+            <button class="btn btn-green" onclick="nmosBulkCreatePool()">{{ _('service.nmos.creer_le_pool') }}</button>
+            <button class="btn" onclick="nmosPurgeOrphans()" title="{{ _('service.nmos.supprime_les_rx_tx_auto_crees_des_conten') }}">{{ _('service.nmos.purger_les_orphelins') }}</button>
         </div>
-        <div class="meta" style="margin-top:4px">Libellés <code>&lt;Rx|Tx&gt;[_&lt;préfixe&gt;]_&lt;ID&gt;_&lt;essence&gt;</code>, ID zéro-paddé (ex. <code>Tx_Projet_05_Video</code> ; sans préfixe → <code>Tx_05_Video</code>). Audio en <code>…_Audio</code> (ou <code>…_Audio1/2</code>), ANC en <code>…_Anc</code>.</div>
+        <div class="meta" style="margin-top:4px">{{ _('service.nmos.libelles_lt_rx_tx_gt_lt_prefixe_gt_lt_id')|safe }}</div>
         <div id="nmos_bulk_msg" class="meta" style="margin:var(--space-2) 0"></div>
 
         <!-- Affectation par conteneur : vue Cartes ou Graphe -->
         <div class="row" style="align-items:center; gap:var(--space-2); margin-top:var(--space-2); flex-wrap:wrap">
-            <label style="font-weight:600">Affecter par conteneur</label>
-            <button class="filter-chip active" id="nmos_view_cards" onclick="nmosSetView('cards')">Cartes</button>
-            <button class="filter-chip" id="nmos_view_graph" onclick="nmosSetView('graph')">Graphe</button>
-            <span class="meta" id="nmos_assign_kindlabel">— sens : Rx</span>
+            <label style="font-weight:600">{{ _('service.nmos.affecter_par_conteneur') }}</label>
+            <button class="filter-chip active" id="nmos_view_cards" onclick="nmosSetView('cards')">{{ _('service.nmos.cartes') }}</button>
+            <button class="filter-chip" id="nmos_view_graph" onclick="nmosSetView('graph')">{{ _('service.nmos.graphe') }}</button>
+            <span class="meta" id="nmos_assign_kindlabel">{{ _('service.nmos.sens_rx') }}</span>
         </div>
 
         <!-- Vue Cartes -->
@@ -336,25 +269,21 @@
         <!-- Vue Graphe : slots conteneurs (gauche) ↔ pool fixe (droite), arêtes = bindings -->
         <div id="nmos_graph" style="display:none; margin-top:var(--space-2)">
             <div class="nmos-graph-toolbar">
-                <label class="toggle-inline" title="Étendre une sélection vidéo à l'audio + ANC du même canal (Rx)">
+                <label class="toggle-inline" title="{{ _('service.nmos.etendre_une_selection_video_a_l_audio_an') }}">
                     <input type="checkbox" class="ios-toggle" id="nmos_g_bundle"> Bundle</label>
                 <select id="nmos_g_audio_count" style="width:auto; padding:2px 6px"><option value="1">×1 audio</option><option value="2">×2 audio</option></select>
                 <span class="filter-sep"></span>
-                <button class="btn btn-sm" id="nmos_g_connect" onclick="nmosGraphConnectMode()">Connecter la sélection</button>
-                <button class="btn btn-sm" onclick="nmosGraphUnbindSel()">Délier la sélection</button>
+                <button class="btn btn-sm" id="nmos_g_connect" onclick="nmosGraphConnectMode()">{{ _('service.nmos.connecter_la_selection') }}</button>
+                <button class="btn btn-sm" onclick="nmosGraphUnbindSel()">{{ _('service.nmos.delier_la_selection') }}</button>
                 <span class="filter-sep"></span>
-                <span class="meta" id="nmos_g_selinfo">0 sélectionné</span>
+                <span class="meta" id="nmos_g_selinfo">{{ _('service.nmos.0_selectionne') }}</span>
             </div>
             <div class="nmos-graph-canvas" id="nmos_graph_canvas">
                 <svg class="nmos-graph-edges" id="nmos_graph_edges"></svg>
-                <div class="nmos-col" id="nmos_graph_slots"><div class="nmos-col-title">Slots conteneurs</div></div>
-                <div class="nmos-col" id="nmos_graph_pool"><div class="nmos-col-title">Pool fixe</div></div>
+                <div class="nmos-col" id="nmos_graph_slots"><div class="nmos-col-title">{{ _('service.nmos.slots_conteneurs') }}</div></div>
+                <div class="nmos-col" id="nmos_graph_pool"><div class="nmos-col-title">{{ _('service.nmos.pool_fixe') }}</div></div>
             </div>
-            <div class="meta" style="margin-top:6px">
-                Glisser un slot vers une ressource pour câbler (1 par 1). Sélection multiple : clic, Ctrl-clic,
-                Maj-clic (plage), ou cadre sur le fond, puis « Connecter la sélection » et cliquer la ressource
-                de départ. « Tout assigner » câble tous les canaux d'un conteneur. Clic sur une arête = délier.
-            </div>
+            <div class="meta" style="margin-top:6px">{{ _('service.nmos.glisser_un_slot_vers_une_ressource_pour_') }}</div>
         </div>
     </div>
 </div>
@@ -366,16 +295,18 @@
 // statuts de son côté finirait par contredire les contrôleurs — et l'exploitant ne saurait plus
 // lequel croire.
 (function () {
-    const ETATS = {0: ['Inactif', 'var(--text-muted)'],
-                   1: ['Sain', 'var(--status-running-fg)'],
-                   2: ['Partiel', 'var(--status-warning-fg)'],
-                   3: ['En défaut', 'var(--status-stopped-fg)']};
+    // i18n : clés `service.nmos.js.*` du catalogue du service.
+    const _tnmos = k => (window.t ? window.t(k) : k);
+    const ETATS = {0: [_tnmos('service.nmos.js.inactif'), 'var(--text-muted)'],
+                   1: [_tnmos('service.nmos.js.sain'), 'var(--status-running-fg)'],
+                   2: [_tnmos('service.nmos.js.partiel'), 'var(--status-warning-fg)'],
+                   3: [_tnmos('service.nmos.js.en_defaut'), 'var(--status-stopped-fg)']};
     // NcLinkStatus n'a pas d'etat neutre : 1 = tous les liens up, 2 = certains down, 3 = tous down.
-    const LIENS = {1: ['Tous up', 'var(--status-running-fg)'],
-                   2: ['Partiel', 'var(--status-warning-fg)'],
-                   3: ['Tous down', 'var(--status-stopped-fg)']};
+    const LIENS = {1: [_tnmos('service.nmos.js.tous_up'), 'var(--status-running-fg)'],
+                   2: [_tnmos('service.nmos.js.partiel'), 'var(--status-warning-fg)'],
+                   3: [_tnmos('service.nmos.js.tous_down'), 'var(--status-stopped-fg)']};
     // NcSynchronizationStatus : 0 = non utilisee (neutre), pas « inactif ».
-    const SYNC = Object.assign({}, ETATS, {0: ['Non observée', 'var(--text-muted)']});
+    const SYNC = Object.assign({}, ETATS, {0: [_tnmos('service.nmos.js.non_observee'), 'var(--text-muted)']});
 
     function pastille(v, table) {
         const e = (table || ETATS)[v];
@@ -405,7 +336,7 @@
             body: JSON.stringify({manufacturer: g('s_nmos_asset_manufacturer'),
                                   product: g('s_nmos_asset_product'),
                                   function: g('s_nmos_asset_function')})});
-        if (!r.ok) { mxlToast('Identité d\'appareil : échec', 'error'); return; }
+        if (!r.ok) { mxlToast(_tnmos('service.nmos.js.asset_fail'), 'error'); return; }
         rafraichirNmosIs12();
     };
 
@@ -425,7 +356,7 @@
                 const h  = document.getElementById('nmos_is14_href');
                 const s14 = s.is14 || {};
                 if (el && document.activeElement !== el) el.checked = !!s14.actif;
-                if (h) h.textContent = s14.href || '(désactivé)';
+                if (h) h.textContent = s14.href || _tnmos('service.nmos.js.desactive');
             }
             const a = s.asset || {};
             // Champs de saisie : ne pas écraser ce que l'opérateur est en train de taper.
@@ -440,7 +371,7 @@
             const prt = document.getElementById('s_nmos_is12_port');
             if (document.activeElement !== chk) chk.checked = !!s.enabled_setting;
             if (document.activeElement !== prt) prt.value = s.port_setting || 5010;
-            document.getElementById('nmos_is12_href').textContent = s.href || '(arrêté)';
+            document.getElementById('nmos_is12_href').textContent = s.href || _tnmos('service.nmos.js.arrete');
             document.getElementById('nmos_is12_sessions').textContent = s.sessions ?? '—';
             document.getElementById('nmos_is12_counts').textContent =
                 (s.monitors_rx || 0) + ' Rx / ' + (s.monitors_tx || 0) + ' Tx';
@@ -448,18 +379,17 @@
             // n'a pas de moniteur, et un tableau qui ne montre que le supervisé laisse croire que
             // tout l'est.
             document.getElementById('nmos_is12_skipped').textContent =
-                (s.sans_monitor || 0) + ' ressource(s) IS-04 sans moteur 2110 derrière';
+                _tnmos('service.nmos.js.sans_monitor').replace('{n}', s.sans_monitor || 0);
             if (!s.actif) {
                 document.getElementById('nmos_is12_tbody').innerHTML =
-                    '<tr><td colspan="8" class="meta">IS-12 arrêté.</td></tr>';
+                    '<tr><td colspan="8" class="meta">' + _tnmos('service.nmos.js.is12_stopped') + '</td></tr>';
                 return;
             }
             if (!s.nmos_enabled_setting) {
                 // Une table vide sans explication laisse chercher la panne du mauvais côté.
                 document.getElementById('nmos_is12_tbody').innerHTML =
-                    '<tr><td colspan="8" class="meta">IS-12 tourne, mais le provider NMOS est '
-                    + 'désactivé : aucune ressource IS-04 n\'existe, donc aucun moniteur. '
-                    + 'Activez le provider ci-dessus.</td></tr>';
+                    '<tr><td colspan="8" class="meta">' + _tnmos('service.nmos.js.is12_no_provider')
+                    + '</td></tr>';
                 return;
             }
             const m = (await (await fetch('/api/nmos/is12/monitors')).json()).monitors || [];
