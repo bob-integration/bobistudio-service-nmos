@@ -2927,6 +2927,23 @@ def register_routes(bp):
         st["is12_enabled_setting"]   = bool(db_get_setting("nmos_is12_enabled", False))
         st["is12_port_setting"]      = int(db_get_setting("nmos_is12_port", 5010) or 5010)
         st["asset"]                  = asset_info()      # BCP-002-02
+        # ★ CONTRÔLE DE COHÉRENCE BCP-002-01, EXPOSÉ À L'EXPLOITATION (2026-08-22).
+        # Le MUST est l'unicité du couple `groupe:rôle` dans un même scope de Device. Un banc le
+        # vérifiait déjà (`bench_bcp002.py`), mais un banc qu'on lance à la main ne surveille rien :
+        # l'exploitation ne voyait pas la collision, et depuis que les grouphints sont figés elle
+        # serait DÉFINITIVE. On la publie donc ici, avec les couples fautifs nommés — un compteur
+        # seul dirait « 2 » sans dire lesquels, ce qui n'aide personne à réparer.
+        #
+        # `mesure` sépare l'ABSENCE DE COLLISION de l'ÉCHEC DE LA MESURE : sans ça, un `n: null`
+        # se lit « rien à signaler » côté UI, et le contrôle ment exactement quand il tombe.
+        try:
+            from app.database import db_nmos_grouping_collisions
+            _couples, _total = db_nmos_grouping_collisions()
+            st["grouping_collisions"] = {"mesure": True, "n": _total, "couples": _couples}
+        except Exception as _e:
+            log.warning("BCP-002-01 : contrôle de collision de grouping indisponible : %r", _e)
+            st["grouping_collisions"] = {"mesure": False, "n": None, "couples": [],
+                                         "erreur": repr(_e)}
         return jsonify(st)
 
     @bp.route("/api/nmos/asset", methods=["POST"])

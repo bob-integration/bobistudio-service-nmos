@@ -83,7 +83,7 @@
       "default": false
     }
   },
-  "version": "0.4.0",
+  "version": "0.4.1",
   "order": 0,
   "description": "Provider NMOS IS-04/IS-05 — enregistrement Node, Devices, Receivers et Senders auprès d'un Registry RDS. Expose les endpoints Connection API IS-05 pour le routage. Natural grouping BCP-002-01 (grouphints immuables) et information distinctive d'asset BCP-002-02. IS-12 (WebSocket) et IS-14 (REST, avec sauvegarde/restauration) publient le MÊME modèle MS-05-02, dont la supervision BCP-008 des Receivers et Senders."
 }

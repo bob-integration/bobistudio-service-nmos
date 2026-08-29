@@ -93,6 +93,10 @@
                 <div id="nmos_status_counts" class="meta">—</div></div>
         </div>
         <div id="nmos_status_error" class="meta" style="margin-top:var(--space-2); color: var(--status-stopped-fg)"></div>
+        <!-- BCP-002-01 : unicité du couple groupe:rôle. Le grouping est FIGÉ à la première
+             écriture, donc une collision installée ne se répare pas toute seule — elle doit se
+             voir ici, pas seulement dans un banc qu'on lance à la main. -->
+        <div id="nmos_status_grouping" class="meta" style="margin-top:var(--space-2)"></div>
     </div>
 
     <h2>{{ _('service.nmos.supervision_is_12_bcp_008') }}</h2>
