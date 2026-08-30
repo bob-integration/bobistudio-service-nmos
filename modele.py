@@ -31,6 +31,7 @@ _arret = threading.Event()
 _appareil = None
 _bloc_rx = None
 _bloc_tx = None
+_bloc_plugins = None
 _moniteurs = {}          # resource_id (IS-04) → moniteur
 _thread_sampler = None
 _refs = set()            # protocoles qui tiennent le modèle : "is12", "is14"
@@ -58,7 +59,7 @@ def nb_monitors():
 
 def acquerir(nom):
     """Construit le modèle si besoin et enregistre `nom` comme utilisateur. Idempotent."""
-    global _appareil, _bloc_rx, _bloc_tx, _thread_sampler
+    global _appareil, _bloc_rx, _bloc_tx, _bloc_plugins, _thread_sampler
     with _lock:
         deja = bool(_refs)
         _refs.add(nom)
@@ -68,6 +69,11 @@ def acquerir(nom):
         _appareil = _construire_appareil()
         _bloc_rx = _appareil.bloc("receivers", "Monitors des Receivers (BCP-008-01)")
         _bloc_tx = _appareil.bloc("senders", "Monitors des Senders (BCP-008-02)")
+        # Nos classes non standard doivent être au registre AVANT toute instanciation :
+        # `NcObject.__init__` y lit les descripteurs de propriétés de sa classe.
+        from . import plugins_ncp as _pncp
+        _pncp.enregistrer_classes()
+        _bloc_plugins = _appareil.bloc("plugins", "Paramètres pilotables des plugins")
         _arret.clear()
         _thread_sampler = threading.Thread(target=_sampler_loop, name="nc-sampler", daemon=True)
         _thread_sampler.start()
@@ -78,7 +84,7 @@ def acquerir(nom):
 
 def liberer(nom):
     """Retire `nom` ; démonte le modèle quand plus personne ne le tient."""
-    global _appareil, _bloc_rx, _bloc_tx, _thread_sampler
+    global _appareil, _bloc_rx, _bloc_tx, _bloc_plugins, _thread_sampler
     with _lock:
         _refs.discard(nom)
         if _refs or _appareil is None:
@@ -89,7 +95,7 @@ def liberer(nom):
         t.join(timeout=3)
     with _lock:
         _moniteurs.clear()
-        _appareil = _bloc_rx = _bloc_tx = None
+        _appareil = _bloc_rx = _bloc_tx = _bloc_plugins = None
         _etat["ignores"] = 0
     log.info("Modèle de contrôle démonté (dernier utilisateur : %s)", nom)
 
@@ -230,6 +236,14 @@ def sync_model():
                 _appareil.ajouter(_bloc_tx, mon)
             with _lock:
                 _moniteurs[rid] = mon
+        # Paramètres de plugin (MS-05-02) — best-effort : le monitoring BCP-008 est du chemin
+        # de supervision, il ne doit pas tomber parce qu'un plugin a un param_tree douteux.
+        try:
+            from . import plugins_ncp as _pncp
+            _pncp.sync(_appareil, _bloc_plugins)
+        except Exception as e:
+            log.warning("MS-05-02 : synchronisation des plugins échouée : %s", e)
+
         if a_creer or a_retirer:
             # Journalisé seulement quand l'ensemble CHANGE : `rebuild_model` est appelé à chaque
             # changement d'état de conteneur, une ligne par appel noierait le journal.
