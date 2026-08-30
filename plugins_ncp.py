@@ -45,6 +45,7 @@ contrôleur ne signalera.
 """
 
 import logging
+import unicodedata
 
 from . import ncp
 
@@ -187,7 +188,15 @@ def _role(el, groupe, cle):
     (`GetMemberDescriptors`, chemins IS-14) : il doit dépendre de l'identité du paramètre, jamais
     de son rang dans une liste — un paramètre ajouté au manifeste décalerait tous les autres."""
     brut = "_".join(str(x) for x in (el or "", groupe or "", cle or "") if x != "")
-    return "".join(c if (c.isalnum() or c == "_") else "_" for c in brut).strip("_").lower()
+    # ⚠ ASCII STRICT. `str.isalnum()` accepte les accents (« à ».isalnum() est True), et nos
+    # libellés de groupes sont en français : un rôle « groupe_à_b » se retrouverait dans un chemin
+    # d'URL IS-14 (`/rolePaths/<chemin>`) et dans les recherches par chemin. On translittère donc
+    # (é→e) plutôt que de remplacer par « _ » : deux groupes « Réglages » et « Reglages » doivent
+    # rester distincts de « Rglages », et un rôle illisible ne s'associe plus à rien pour l'humain.
+    brut = unicodedata.normalize("NFKD", brut)
+    brut = "".join(c for c in brut if not unicodedata.combining(c))
+    return "".join(c if (c.isascii() and (c.isalnum() or c == "_")) else "_"
+                   for c in brut).strip("_").lower()
 
 
 class Parametre(ncp.NcWorker):
