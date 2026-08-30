@@ -2692,6 +2692,13 @@ def stop():
 def status_dict():
     with _lock:
         return {
+            # ★ EN MARCHE ≠ ENREGISTRÉ. Le service tourne dès que le modèle est
+            # bâti (`node_id` posé) : il sert alors IS-04, IS-05 et IS-12. Être
+            # ENREGISTRÉ auprès d'un registre NMOS est autre chose, et c'est
+            # facultatif — en mode pair-à-pair il n'y a aucun registre à joindre.
+            # Faute de publier `running`, l'agrégateur retombait sur `registered`
+            # et affichait « arrêté » un service parfaitement opérationnel.
+            "running": _state.get("node_id") is not None,
             "enabled": bool(_state.get("registry_url")) or _state.get("node_id") is not None,
             "registry_url": _state.get("registry_url"),
             "registered": _state.get("registered"),
