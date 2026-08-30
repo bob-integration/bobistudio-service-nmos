@@ -41,6 +41,9 @@ log = logging.getLogger(__name__)
 IS04_VERSION = "v1.3"
 IS05_VERSION = "v1.1"
 HEARTBEAT_S = 5.0
+# Période du FILET de reconstruction (cf. _register_loop) : assez rare pour être gratuite,
+# assez fréquente pour qu'une notification oubliée ne laisse pas le modèle périmé longtemps.
+REBUILD_FILET_S = 60.0
 
 bp = Blueprint("nmos", __name__)
 
@@ -2549,9 +2552,20 @@ def _register_one(reg_base, type_str, data):
     if r.status_code not in (200, 201):
         raise RuntimeError(f"register {type_str} {data.get('id')} → HTTP {r.status_code}: {r.text[:200]}")
 
+# Ce qu'on a POSTÉ au registre lors du dernier cycle, par type → {ids}. Sert à retirer ce qui a
+# disparu de notre modèle : un POST est un upsert, il n'efface rien. Sans cette comparaison, un
+# conteneur détruit laisse ses Sender/Receiver au registre jusqu'à l'expiration du Node entier —
+# et un contrôleur continue de proposer un routage vers un flux qui n'existe plus.
+_registre_pousse = {}
+
+
 def _register_all(reg_base):
-    """Enregistre node + devices + sources + flows + senders + receivers en cascade.
-    L'ordre compte côté RDS : source avant flow, flow avant sender."""
+    """Enregistre node + devices + sources + flows + senders + receivers en cascade, puis RETIRE
+    du registre ce qui a disparu de notre modèle depuis le cycle précédent.
+
+    L'ordre compte côté RDS : source avant flow, flow avant sender. À la suppression, l'ordre est
+    INVERSE (enfants d'abord) — un registre conforme retire la descendance d'office, mais tous ne
+    le font pas, et supprimer un parent en premier laisserait des orphelins chez ceux-là."""
     version = _tai_version()
     node = _build_node_resource(version)
     _register_one(reg_base, "node", node)
@@ -2561,11 +2575,47 @@ def _register_all(reg_base):
         flows   = list(_flows.values())
         sends   = list(_senders.values())
         recvs   = list(_receivers.values())
-    for d in devs:   _register_one(reg_base, "device",   d)
-    for s in srcs:   _register_one(reg_base, "source",   s)
-    for f in flows:  _register_one(reg_base, "flow",     f)
-    for s in sends:  _register_one(reg_base, "sender",   s)
-    for r in recvs:  _register_one(reg_base, "receiver", r)
+    # ★ BATTRE PENDANT L'ENREGISTREMENT — sinon on se fait expirer avant d'avoir commencé.
+    # Mesuré le 2026-08-31 : pousser nos ~1030 ressources prend ~9 s en séquentiel. Le client ne
+    # battait qu'APRÈS la boucle complète, donc premier battement à T+14 s (9 s de POST + 5 s de
+    # sommeil) — alors que le ramasse-miettes d'IS-04 expire un Node à T+12 s. Résultat observé
+    # dans le journal : « enregistré » / « Node expiré » / « heartbeat 404 » en boucle sans fin,
+    # et un registre dont le contenu oscille. Le défaut est CÔTÉ CLIENT et vaut pour n'importe
+    # quel registre tiers : à notre échelle, on ferait clignoter le registre d'un client.
+    _depuis = [time.monotonic()]
+
+    def _pousser(type_str, items):
+        for x in items:
+            _register_one(reg_base, type_str, x)
+            if time.monotonic() - _depuis[0] >= HEARTBEAT_S:
+                try:
+                    _heartbeat(reg_base)
+                except Exception:
+                    pass          # un battement raté pendant l'enregistrement n'est pas fatal :
+                                  # la boucle principale le retentera et ré-enregistrera au besoin
+                _depuis[0] = time.monotonic()
+
+    _pousser("device",   devs)
+    _pousser("source",   srcs)
+    _pousser("flow",     flows)
+    _pousser("sender",   sends)
+    _pousser("receiver", recvs)
+
+    courant = {"device": {d["id"] for d in devs}, "source": {s["id"] for s in srcs},
+               "flow": {f["id"] for f in flows}, "sender": {s["id"] for s in sends},
+               "receiver": {r["id"] for r in recvs}}
+    ancien = _registre_pousse.get(reg_base) or {}
+    for type_str in ("receiver", "sender", "flow", "source", "device"):
+        for rid in (ancien.get(type_str, set()) - courant[type_str]):
+            try:
+                requests.delete("%s/x-nmos/registration/%s/resource/%ss/%s"
+                                % (reg_base, IS04_VERSION, type_str, rid), timeout=5)
+            except Exception as e:
+                # Best-effort : un retrait raté sera retenté au cycle suivant (l'id reste dans
+                # `ancien` puisqu'on ne remplace la carte qu'à la fin).
+                log.warning("nmos: retrait de %s %s au registre échoué : %s", type_str, rid, e)
+                courant[type_str] = courant[type_str] | {rid}
+    _registre_pousse[reg_base] = courant
 
 def _heartbeat(reg_base):
     url = f"{reg_base}/x-nmos/registration/{IS04_VERSION}/health/nodes/{_state['node_id']}"
@@ -2596,6 +2646,7 @@ def _register_loop():
             log.info(f"nmos: enregistré auprès de {reg}")
             backoff = 5
             # Heartbeat loop
+            _dernier_controle = time.monotonic()
             while _running and _state["registry_url"] == reg:
                 time.sleep(HEARTBEAT_S)
                 try:
@@ -2605,6 +2656,29 @@ def _register_loop():
                     _state["registered"] = False
                     _state["last_register_error"] = str(e)
                     break  # ré-enregistrer
+                # ── FILET : reconstruire périodiquement et re-pousser SI le modèle a bougé ──
+                # `rebuild_model()` n'est appelé que sur notification (`notify_state_change`), et
+                # cette couverture s'est révélée INCOMPLÈTE — aucun chemin de destruction compute
+                # ne notifiait, découvert au banc le 2026-08-31. Un site d'appel oublié rendait
+                # alors le modèle périmé POUR TOUJOURS. Auparavant un bug masquait le problème :
+                # l'enregistrement expirait toutes les ~14 s et reconstruisait en boucle. En le
+                # corrigeant, on perdait ce rafraîchissement accidentel — d'où ce filet explicite.
+                # Coût mesuré : un rebuild = 0,71 s, soit ~1 % d'un cœur à cette période.
+                if time.monotonic() - _dernier_controle >= REBUILD_FILET_S:
+                    _dernier_controle = time.monotonic()
+                    try:
+                        rebuild_model()
+                        with _lock:
+                            actuel = {"device": {d["id"] for d in _devices.values()},
+                                      "source": {x["id"] for x in _sources.values()},
+                                      "flow": {x["id"] for x in _flows.values()},
+                                      "sender": {x["id"] for x in _senders.values()},
+                                      "receiver": {x["id"] for x in _receivers.values()}}
+                        if actuel != (_registre_pousse.get(reg) or {}):
+                            log.info("nmos: le modèle a changé sans notification — re-poussé")
+                            _register_all(reg)
+                    except Exception as e:
+                        log.warning("nmos: filet de reconstruction échoué : %s", e)
         except Exception as e:
             log.warning(f"nmos: registration échouée : {e}")
             _state["registered"] = False
