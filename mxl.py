@@ -204,6 +204,64 @@ def _tags(vmid, hostname):
     return {"urn:x-mxl:vmid": [str(vmid)], "urn:x-mxl:hostname": [str(hostname or "")]}
 
 
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# Grouping BCP-002-01 — DÉRIVÉ, pas figé
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# Le provider 2110 fige ses group hints AU REGISTRE (`db_nmos_resource_upsert`) parce que la BCP
+# les veut IMMUABLES. Nos ressources MXL sont hors registre (décision « identité dérivée ») : on ne
+# peut pas les y figer. On les DÉRIVE donc, de façon déterministe, depuis `(instance_uuid, index
+# vidéo)` — l'immuabilité vient alors du déterminisme et non du gel en base. Même propriété,
+# sans état à tenir.
+#
+# POURQUOI ÇA COMPTE, concrètement : `_apply_wire` est GROUPÉ — câbler la vidéo pose aussi l'audio
+# et l'ANC (mesuré au banc). Sans group hint, un contrôleur tiers qui patche la vidéo voit deux
+# autres Receivers bouger sans les avoir demandés. Le groupe est ce qui rend ce comportement
+# LISIBLE au lieu de le rendre surprenant.
+
+def _groupes(ports, base):
+    """{clé de port → (group_name, role)} pour une direction (produces OU consumes).
+
+    Règle : les flux vidéo ouvrent les bundles ; audio et données rejoignent le bundle de MÊME
+    RANG dans leur propre essence. Un conteneur à une seule vidéo (le cas courant) = un seul
+    bundle, tout le monde dedans.
+
+    ⚠ LE RANG, PAS LE `slot` — et ce n'est pas un détail de style. Les plugins ne numérotent pas
+    leurs slots de la même façon, vérifié sur le parc le 2026-08-31 :
+      · `2110_io`     numérote PAR ESSENCE  → tx1_shm, tx_audio1_shm et tx_anc1_shm ont TOUS slot=0
+      · `hello_world` numérote GLOBALEMENT  → video slot=0, audio slot=1, anc slot=2
+    Une règle indexée sur `slot` tombe juste sur ces deux-là par coïncidence, et mésapparie dès
+    qu'un plugin déclare deux vidéos avec des slots globaux. Le rang dans sa propre essence, lui,
+    ne dépend d'aucune convention de plugin. Un groupe FAUX est pire que pas de groupe : il
+    affirme au contrôleur que des ports sans rapport vont ensemble."""
+    from . import pad_index
+    rangs = {}
+    for p in ports:
+        e = _essence(p)
+        rangs[p["key"]] = rangs.get("n:" + e, 0)
+        rangs["n:" + e] = rangs[p["key"]] + 1
+    n = rangs.get("n:video", 0)
+    out = {}
+    for p in ports:
+        ess = _essence(p)
+        rang = rangs[p["key"]]
+        i = rang if n and rang < n else (rang % n if n else None)
+        nom = base if (n <= 1 or i is None) else "%s %02d" % (base, i + 1)
+        role = ess if ess != "data" else "anc"
+        # Plusieurs ports de MÊME essence dans un bundle → le rôle doit les distinguer, sinon le
+        # contrôleur affiche deux « audio » indiscernables dans le même groupe.
+        if rangs.get("n:" + ess, 0) > 1:
+            role = "%s %d" % (role, rang + 1)
+        out[p["key"]] = (pad_index(nom), pad_index(role))
+    return out
+
+
+def _poser_grouphint(resource, groupe):
+    from . import GROUPHINT_TAG
+    gn, rl = groupe
+    resource.setdefault("tags", {})[GROUPHINT_TAG] = [
+        "%s:%s" % (str(gn).replace(":", " "), str(rl).replace(":", " "))]
+
+
 def _build_source(sid, did, vmid, hostname, label, essence, fmt, version):
     r = {
         "id": sid,
@@ -358,6 +416,23 @@ def build(new_devices, new_sources, new_flows, new_senders, new_receivers,
     return ids
 
 
+def est_mxl(res_id, send_state, recv_state):
+    """La ressource `res_id` relève-t-elle de la surface MXL ? (par opposition au RTP du 2110)"""
+    st = send_state.get(res_id) or recv_state.get(res_id)
+    return bool(st and st.get("mxl"))
+
+
+def ecriture_ouverte():
+    """L'écriture IS-05 sur la surface MXL est-elle ouverte ? NON par défaut.
+
+    Décision 2 du chantier : « lecture seule d'abord ». Tant que la bascule de l'autorité vers
+    IS-05 (décision 1) n'est pas faite, un PATCH est refusé en 405 — franchement, plutôt que
+    d'être accepté et de créer une seconde vérité de routage à côté de la page Câbles.
+    Le réglage `nmos_mxl_ecriture` lève le verrou pour éprouver le chemin d'écriture."""
+    from . import _setting
+    return str(_setting("nmos_mxl_ecriture", "0")).strip() in ("1", "true", "on", "yes")
+
+
 def _setting_off():
     """Réglage `nmos_mxl` (défaut : activé). Un site qui ne veut pas exposer son bus interne aux
     contrôleurs tiers coupe la surface d'un cran, sans toucher au 2110."""
@@ -381,6 +456,8 @@ def _build_one(c, new_devices, new_sources, new_flows, new_senders, new_receiver
     params = (_dc or {}).get("params") or {}
     domain_id = _domain_id(c.get("node_id"))
     label_base = hostname or ("conteneur %s" % vmid)
+    grp_tx = _groupes(ports["produces"], label_base)
+    grp_rx = _groupes(ports["consumes"], label_base)
 
     for p in ports["produces"]:
         shm = (p.get("shm") or "").strip()
@@ -396,6 +473,7 @@ def _build_one(c, new_devices, new_sources, new_flows, new_senders, new_receiver
         new_sources[sid] = _build_source(sid, cluster_did, vmid, hostname, lbl, ess, fmt, version)
         new_flows[fid] = _build_flow(fid, cluster_did, sid, vmid, hostname, lbl, ess, fmt, version)
         new_senders[snd] = _build_sender(snd, cluster_did, fid, vmid, hostname, lbl, version)
+        _poser_grouphint(new_senders[snd], grp_tx[p["key"]])
         new_devices[cluster_did]["senders"].append(snd)
         ids.add(snd)
         # Un Sender MXL est ACTIF par construction : le conteneur écrit ce flux tant qu'il tourne.
@@ -420,6 +498,7 @@ def _build_one(c, new_devices, new_sources, new_flows, new_senders, new_receiver
         rid = _rid("receiver", iu, ess, slot)
         lbl = p.get("label") or ("%s entrée %s %d" % (label_base, ess, slot + 1))
         new_receivers[rid] = _build_receiver(rid, cluster_did, vmid, hostname, lbl, ess, version)
+        _poser_grouphint(new_receivers[rid], grp_rx[p["key"]])
         new_devices[cluster_did]["receivers"].append(rid)
         ids.add(rid)
         # L'état IS-05 d'un Receiver MXL est un CONSTAT du câble réellement posé (params du

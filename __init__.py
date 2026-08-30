@@ -1252,6 +1252,23 @@ def rebuild_model():
         if rid in _recv_state:
             _recv_state[rid]["vmid"] = sv
 
+    # ── Surface MXL (BCP-007-03) ──────────────────────────────────────────────────────────────
+    # Ajoutée APRÈS les passes conteneurs et registre : elle ne partage rien avec elles (identité
+    # dérivée, hors `nmos_resources`) et ne doit surtout pas perturber leurs invariants. Les états
+    # atterrissent dans les MÊMES `_recv_state`/`_send_state` — la purge des orphelins en fin de
+    # rebuild s'y applique donc telle quelle, sans code dédié.
+    #
+    # ⚠ Best-effort ASSUMÉ : le provider 2110 est du chemin de production, la surface MXL est un
+    # ajout. Si elle explose, elle ne doit pas emporter le 2110 avec elle.
+    try:
+        from . import mxl as _mxl
+        _mxl.build(new_devices, new_sources, new_flows, new_senders, new_receivers,
+                   _recv_state, _send_state, cluster_did, version)
+        _mxl.reindex(_send_state)
+        _mxl.resync_subscriptions(new_receivers, _recv_state, new_senders, _send_state)
+    except Exception as e:
+        log.warning("nmos: surface MXL non construite (%s) — le provider 2110 continue", e)
+
     with _lock:
         _devices.clear();   _devices.update(new_devices)
         _receivers.clear(); _receivers.update(new_receivers)
@@ -1428,6 +1445,10 @@ def is05_recv_endpoints(rid):
 @bp.route(f"/x-nmos/connection/{IS05_VERSION}/single/receivers/<rid>/constraints", methods=["GET"])
 def is05_recv_constraints(rid):
     if rid not in _receivers: abort(404)
+    from . import mxl as _mxl
+    _c = _mxl.constraints(rid, _send_state, _recv_state)
+    if _c is not None:
+        return jsonify(_c)
     return jsonify([{}])  # single-leg, sans contrainte particulière
 
 @bp.route(f"/x-nmos/connection/{IS05_VERSION}/single/receivers/<rid>/staged", methods=["GET"])
@@ -1445,6 +1466,11 @@ def is05_recv_active_get(rid):
 @bp.route(f"/x-nmos/connection/{IS05_VERSION}/single/receivers/<rid>/transportfile", methods=["GET"])
 def is05_recv_transportfile(rid):
     if rid not in _receivers: abort(404)
+    # BCP-007-03 : MXL n'a PAS de fichier de transport. L'endpoint doit exister (IS-05 l'exige)
+    # et répondre 404 — c'est le pendant de `manifest_href: null` côté IS-04.
+    from . import mxl as _mxl
+    if _mxl.est_mxl(rid, _send_state, _recv_state):
+        return ("", 404)
     with _lock:
         tf = _recv_state[rid]["active"].get("transport_file") or {}
     if not tf.get("data"):
@@ -1733,14 +1759,38 @@ def _apply_sender_staged(sid, body):
 @bp.route(f"/x-nmos/connection/{IS05_VERSION}/single/receivers/<rid>/staged", methods=["PATCH"])
 def is05_recv_staged_patch(rid):
     body = request.get_json(force=True, silent=True) or {}
+    refus = _mxl_refus_ecriture(rid)
+    if refus:
+        return refus
     code, payload = _apply_receiver_staged(rid, body)
     return jsonify(payload), code
 
 @bp.route(f"/x-nmos/connection/{IS05_VERSION}/single/senders/<sid>/staged", methods=["PATCH"])
 def is05_send_staged_patch(sid):
     body = request.get_json(force=True, silent=True) or {}
+    refus = _mxl_refus_ecriture(sid)
+    if refus:
+        return refus
     code, payload = _apply_sender_staged(sid, body)
     return jsonify(payload), code
+
+
+def _mxl_refus_ecriture(res_id):
+    """405 si `res_id` est une ressource MXL et que l'écriture n'est pas ouverte, sinon None.
+
+    Un 405 explicite vaut mieux qu'un 200 qui n'applique rien : tant que l'autorité du routage
+    n'est pas basculée vers IS-05, accepter un patch créerait exactement la seconde vérité qu'on
+    cherche à éviter. Le message dit OÙ câbler en attendant — un refus qui n'indique pas la
+    marche à suivre coûte un aller-retour à l'intégrateur."""
+    from . import mxl as _mxl
+    if not _mxl.est_mxl(res_id, _send_state, _recv_state) or _mxl.ecriture_ouverte():
+        return None
+    return jsonify({
+        "code": 405,
+        "error": "surface MXL en lecture seule : le câblage passe par l'orchestrateur "
+                 "(page Câbles). Réglage `nmos_mxl_ecriture` pour lever ce verrou.",
+        "debug": res_id,
+    }), 405
 
 
 # ─── IS-05 bulk endpoints ─────────────────────────────────────────
@@ -1788,6 +1838,10 @@ def is05_send_endpoints(sid):
 @bp.route(f"/x-nmos/connection/{IS05_VERSION}/single/senders/<sid>/constraints", methods=["GET"])
 def is05_send_constraints(sid):
     if sid not in _senders: abort(404)
+    from . import mxl as _mxl
+    _c = _mxl.constraints(sid, _send_state, _recv_state)
+    if _c is not None:
+        return jsonify(_c)
     return jsonify([{}])
 
 @bp.route(f"/x-nmos/connection/{IS05_VERSION}/single/senders/<sid>/staged", methods=["GET"])
@@ -1807,6 +1861,9 @@ def is05_send_transportfile(sid):
     """Fetch en live le SDP depuis le container sender (champ `sdp` du /metrics).
     Si PTP est sync côté host, injecte les lignes ts-refclk + mediaclk (conformité 2110)."""
     if sid not in _senders: abort(404)
+    from . import mxl as _mxl
+    if _mxl.est_mxl(sid, _send_state, _recv_state):
+        return ("", 404)          # BCP-007-03 : pas de fichier de transport en MXL
     with _lock:
         vmid = _send_state[sid]["vmid"]
         tx_idx = _send_state[sid].get("tx_idx")   # présent ⇒ sender d'un moteur MTL bi-rôle
