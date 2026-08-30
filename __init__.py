@@ -52,7 +52,7 @@ _lock = threading.RLock()
 _running = False
 _register_thread = None
 _mdns_zc = None         # zeroconf instance
-_mdns_service = None    # ServiceInfo enregistré
+_mdns_services = []     # ServiceInfo enregistrés (_nmos-node, + register/query si le registre est ouvert)
 _state = {
     "node_id": None,
     "node_started_unix": int(time.time()),
@@ -2620,11 +2620,58 @@ def _register_loop():
 # mDNS : annonce _nmos-node._tcp.local. (RFC 6762 / IS-04 bootstrapping)
 # ═════════════════════════════════════════════════════════════════════
 
-def _mdns_start():
-    """Publie le service _nmos-node._tcp.local. avec les TXT records IS-04."""
-    global _mdns_zc, _mdns_service
+def _mdns_pri():
+    """Priorité annoncée pour NOTRE registre. IS-04 : « Values 0 to 99 correspond to an active
+    NMOS Registration API (zero being the highest priority). Values 100+ are reserved for
+    development work to avoid colliding with a live system. »
+
+    ★ DÉFAUT 100, c'est-à-dire « développement », et c'est VOULU. Un registre qui s'annonce en
+    priorité de production détourne vers lui les Nodes d'un registre déjà en place sur le même
+    LAN — un incident d'exploitation majeur causé par un simple réglage laissé à zéro. C'est à
+    l'exploitant d'abaisser cette valeur quand il DÉCIDE que notre registre fait référence."""
     try:
-        from zeroconf import IPVersion, ServiceInfo, Zeroconf
+        return max(0, min(255, int(_setting("nmos_registre_pri", 100))))
+    except (TypeError, ValueError):
+        return 100
+
+
+def _mdns_services_a_publier(addr_bytes, host):
+    """[(type, ServiceInfo)] à annoncer. Toujours `_nmos-node` ; plus `_nmos-register` et
+    `_nmos-query` quand le registre embarqué est ouvert — sans ces deux-là, un tiers ne peut pas
+    TROUVER notre registre et doit se voir donner l'URL à la main."""
+    from zeroconf import ServiceInfo
+    label = _setting("nmos_node_label", "MXL Orchestrator")
+    suffixe = (_state.get("node_id") or "")[:8]
+    txt_commun = {"api_proto": "http", "api_ver": IS04_VERSION, "api_auth": "false"}
+    out = []
+
+    def _ajouter(type_court, txt):
+        type_ = f"_{type_court}._tcp.local."
+        out.append((type_court, ServiceInfo(
+            type_=type_,
+            # Le nom DOIT être unique sur le LAN ; on inclut le node_id pour éviter les collisions.
+            name=f"{label} {suffixe}.{type_}",
+            addresses=[addr_bytes], port=5000, weight=0, priority=0,
+            properties=txt, server=f"{socket.gethostname()}.local.")))
+
+    _ajouter("nmos-node", dict(txt_commun))
+    try:
+        from . import registre as _reg
+        if _reg.actif():
+            # `pri` n'est requis que sur Registration et Query — pas sur Node.
+            avec_pri = dict(txt_commun, pri=str(_mdns_pri()))
+            _ajouter("nmos-register", avec_pri)
+            _ajouter("nmos-query", dict(avec_pri))
+    except Exception as e:
+        log.warning("nmos: registre non interrogeable pour l'annonce mDNS (%s)", e)
+    return out
+
+
+def _mdns_start():
+    """Publie les services NMOS en mDNS (RFC 6762 / bootstrapping IS-04)."""
+    global _mdns_zc, _mdns_services
+    try:
+        from zeroconf import IPVersion, Zeroconf
     except Exception as e:
         log.warning(f"nmos: zeroconf indisponible ({e})")
         return False, str(e)
@@ -2635,47 +2682,36 @@ def _mdns_start():
     except Exception:
         log.warning(f"nmos: mDNS — IP {host!r} invalide")
         return False, "IP invalide"
-    label = _setting("nmos_node_label", "MXL Orchestrator")
-    # Le nom DOIT être unique sur le LAN ; on inclut le node_id pour éviter les collisions.
-    instance = f"{label} {(_state.get('node_id') or '')[:8]}._nmos-node._tcp.local."
-    info = ServiceInfo(
-        type_="_nmos-node._tcp.local.",
-        name=instance,
-        addresses=[addr_bytes],
-        port=5000,
-        weight=0,
-        priority=0,
-        properties={
-            "api_proto": "http",
-            "api_ver":   IS04_VERSION,
-            "api_auth":  "false",
-        },
-        server=f"{socket.gethostname()}.local.",
-    )
+    services = _mdns_services_a_publier(addr_bytes, host)
     try:
         zc = Zeroconf(ip_version=IPVersion.V4Only)
-        zc.register_service(info)
+        for _court, info in services:
+            zc.register_service(info)
     except Exception as e:
         log.warning(f"nmos: échec register mDNS: {e}")
+        try: zc.close()
+        except Exception: pass
         return False, str(e)
     _mdns_zc = zc
-    _mdns_service = info
+    _mdns_services = [i for _c, i in services]
     _state["mdns_active"] = True
-    log.info(f"nmos: mDNS annoncé ({instance} @ {host}:5000)")
+    _state["mdns_types"] = [c for c, _i in services]
+    log.info("nmos: mDNS annoncé (%s) @ %s:5000", ", ".join(c for c, _i in services), host)
     return True, "ok"
 
 
 def _mdns_stop():
-    global _mdns_zc, _mdns_service
-    if _mdns_zc and _mdns_service:
-        try: _mdns_zc.unregister_service(_mdns_service)
-        except Exception: pass
+    global _mdns_zc, _mdns_services
     if _mdns_zc:
+        for info in _mdns_services:
+            try: _mdns_zc.unregister_service(info)
+            except Exception: pass
         try: _mdns_zc.close()
         except Exception: pass
     _mdns_zc = None
-    _mdns_service = None
+    _mdns_services = []
     _state["mdns_active"] = False
+    _state["mdns_types"] = []
 
 
 def start(registry_url):
@@ -2767,6 +2803,7 @@ def status_dict():
             "receiver_count": len(_receivers),
             "sender_count": len(_senders),
             "mdns_active": bool(_state.get("mdns_active")),
+            "mdns_types": list(_state.get("mdns_types") or []),
             "is12": _is12_status(),
         }
 
