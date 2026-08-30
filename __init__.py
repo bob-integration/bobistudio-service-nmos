@@ -3821,3 +3821,10 @@ def register_routes(bp):
 # `app.metrics`. Un import en tête de fichier boucle.
 from . import is14 as _is14          # noqa: E402
 _is14.enregistrer(bp)
+
+# Registre IS-04 embarqué (Registration + Query API). Même raison d'être ici qu'IS-14 : c'est du
+# NMOS, donc sous /x-nmos/, et les routes doivent être greffées avant que main.py n'enregistre le
+# blueprint. Servi seulement si le réglage `nmos_registre` est posé — les routes existent
+# toujours, mais répondent 501 tant que l'exploitant n'a pas ouvert cette surface externe.
+from . import registre as _registre  # noqa: E402
+_registre.enregistrer(bp)
