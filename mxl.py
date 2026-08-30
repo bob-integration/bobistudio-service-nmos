@@ -567,18 +567,26 @@ def resync_subscriptions(receivers, recv_state, senders, send_state):
 # IS-05 : /constraints
 # ══════════════════════════════════════════════════════════════════════════════════════════════
 
-def _domain_enum():
-    """Domaines MXL du cluster (un par nœud enrôlé qui en a un)."""
-    out = []
+def _node_de(st):
+    """node_id du conteneur qui sert cette ressource, ou None."""
     try:
-        from app.database import db_get_nodes, db_node_mxl_domain_id
-        for n in db_get_nodes():
-            d = db_node_mxl_domain_id(n["id"])
-            if d and d not in out:
-                out.append(d)
-    except Exception as e:
-        log.warning("nmos/mxl: énumération des domaines impossible : %s", e)
-    return out
+        from app.database import db_get_container
+        return (db_get_container(st.get("vmid")) or {}).get("node_id")
+    except Exception:
+        return None
+
+
+def _domain_enum(st):
+    """Domaines MXL ATTEIGNABLES par cette ressource — c'est-à-dire UN SEUL : celui de son nœud.
+
+    ⚠ Piège corrigé le 2026-08-31, vu sur le HTTP réel : une première version énumérait les
+    quatre domaines du cluster. **Le bus MXL est LOCAL à un nœud** — un Receiver de dl360-1 ne
+    peut rien lire du domaine de dell-1 (sauf réplication RDMA, qui est un autre mécanisme et
+    fabrique un flux LOCAL). Annoncer les domaines des autres nœuds, c'est publier des routes
+    impossibles : le contrôleur les propose, l'exploitant les tente, et l'échec n'arrive qu'à
+    l'activation. `/constraints` est justement l'endroit qui doit dire ce qui est ATTEIGNABLE."""
+    d = _domain_id(_node_de(st))
+    return [d] if d else []
 
 
 def constraints(res_id, send_state, recv_state):
@@ -589,7 +597,7 @@ def constraints(res_id, send_state, recv_state):
     st = send_state.get(res_id) or recv_state.get(res_id)
     if not st or not st.get("mxl"):
         return None
-    doms = _domain_enum()
+    doms = _domain_enum(st)
     c = {"mxl_domain_id": {}, "mxl_flow_id": {}}
     if doms:
         c["mxl_domain_id"]["enum"] = doms
@@ -599,13 +607,16 @@ def constraints(res_id, send_state, recv_state):
         if fid:
             c["mxl_flow_id"]["enum"] = [fid]
     else:
-        # Un Receiver peut lire n'importe quel flux MXL annoncé par le cluster, à essence égale.
+        # Un Receiver lit les flux de MÊME ESSENCE publiés SUR SON NŒUD — même raison que pour le
+        # domaine : le bus ne traverse pas la frontière du nœud.
         ess = st.get("essence") or "video"
+        mien = _node_de(st)
         c["mxl_flow_id"]["enum"] = [
             (s["active"]["transport_params"][0] or {}).get("mxl_flow_id")
             for s in send_state.values()
             if s.get("mxl") and (s.get("essence") or "video") == ess
             and (s["active"]["transport_params"][0] or {}).get("mxl_flow_id")
+            and (mien is None or _node_de(s) == mien)
         ]
     return [c]
 
