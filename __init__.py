@@ -1699,9 +1699,30 @@ def manual_subscribe(vmid, recv_idx, essence, sdp, enable=True):
     return _apply_receiver_staged(rid, body)
 
 
+def _mxl_verrouille(res_id):
+    """La ressource `res_id` est-elle une ressource MXL en lecture seule ? (code, payload) ou None.
+
+    ★ CETTE GARDE VIT AU POINT DE PASSAGE, PAS SUR LA ROUTE. Elle a d'abord été posée sur les deux
+    routes PATCH unitaires — et les endpoints BULK (`/bulk/receivers`, `/bulk/senders`), qui
+    appellent `_apply_*_staged` en direct, la contournaient intégralement. Un garde conditionné à
+    QUI APPELLE ne protège que celui-là : il faut le mettre là où tout le monde passe."""
+    from . import mxl as _mxl
+    if not _mxl.est_mxl(res_id, _send_state, _recv_state) or _mxl.ecriture_ouverte():
+        return None
+    return 405, {
+        "code": 405,
+        "error": "surface MXL en lecture seule : le câblage passe par l'orchestrateur "
+                 "(page Câbles). Réglage `nmos_mxl_ecriture` pour lever ce verrou.",
+        "debug": res_id,
+    }
+
+
 def _apply_receiver_staged(rid, body):
     """Logique de merge staged + activation pour un receiver. Renvoie (code, dict).
     Utilisé par le PATCH single ET le bulk POST."""
+    _refus = _mxl_verrouille(rid)
+    if _refus:
+        return _refus
     if rid not in _receivers:
         return 404, {"error": "receiver not found", "id": rid}
     with _lock:
@@ -1729,6 +1750,9 @@ def _apply_receiver_staged(rid, body):
 def _apply_sender_staged(sid, body):
     """Merge staged + activation pour un sender. Pas de forward agent (le worker
     2110_sender émet en continu selon ses params de deploy)."""
+    _refus = _mxl_verrouille(sid)
+    if _refus:
+        return _refus
     if sid not in _senders:
         return 404, {"error": "sender not found", "id": sid}
     with _lock:
@@ -1762,38 +1786,15 @@ def _apply_sender_staged(sid, body):
 @bp.route(f"/x-nmos/connection/{IS05_VERSION}/single/receivers/<rid>/staged", methods=["PATCH"])
 def is05_recv_staged_patch(rid):
     body = request.get_json(force=True, silent=True) or {}
-    refus = _mxl_refus_ecriture(rid)
-    if refus:
-        return refus
     code, payload = _apply_receiver_staged(rid, body)
     return jsonify(payload), code
 
 @bp.route(f"/x-nmos/connection/{IS05_VERSION}/single/senders/<sid>/staged", methods=["PATCH"])
 def is05_send_staged_patch(sid):
     body = request.get_json(force=True, silent=True) or {}
-    refus = _mxl_refus_ecriture(sid)
-    if refus:
-        return refus
     code, payload = _apply_sender_staged(sid, body)
     return jsonify(payload), code
 
-
-def _mxl_refus_ecriture(res_id):
-    """405 si `res_id` est une ressource MXL et que l'écriture n'est pas ouverte, sinon None.
-
-    Un 405 explicite vaut mieux qu'un 200 qui n'applique rien : tant que l'autorité du routage
-    n'est pas basculée vers IS-05, accepter un patch créerait exactement la seconde vérité qu'on
-    cherche à éviter. Le message dit OÙ câbler en attendant — un refus qui n'indique pas la
-    marche à suivre coûte un aller-retour à l'intégrateur."""
-    from . import mxl as _mxl
-    if not _mxl.est_mxl(res_id, _send_state, _recv_state) or _mxl.ecriture_ouverte():
-        return None
-    return jsonify({
-        "code": 405,
-        "error": "surface MXL en lecture seule : le câblage passe par l'orchestrateur "
-                 "(page Câbles). Réglage `nmos_mxl_ecriture` pour lever ce verrou.",
-        "debug": res_id,
-    }), 405
 
 
 # ─── IS-05 bulk endpoints ─────────────────────────────────────────
@@ -2709,7 +2710,7 @@ def _mdns_pri():
         return 100
 
 
-def _mdns_services_a_publier(addr_bytes, host):
+def _mdns_services_a_publier(addr_bytes):
     """[(type, ServiceInfo)] à annoncer. Toujours `_nmos-node` ; plus `_nmos-register` et
     `_nmos-query` quand le registre embarqué est ouvert — sans ces deux-là, un tiers ne peut pas
     TROUVER notre registre et doit se voir donner l'URL à la main."""
@@ -2756,7 +2757,7 @@ def _mdns_start():
     except Exception:
         log.warning(f"nmos: mDNS — IP {host!r} invalide")
         return False, "IP invalide"
-    services = _mdns_services_a_publier(addr_bytes, host)
+    services = _mdns_services_a_publier(addr_bytes)
     try:
         zc = Zeroconf(ip_version=IPVersion.V4Only)
         for _court, info in services:
