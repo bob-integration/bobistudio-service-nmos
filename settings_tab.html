@@ -1,4 +1,35 @@
-<div id="protocoles-tab-nmos" class="set-tab-content">
+<!-- ══════════════════════════════════════════════════════════════════════════════════════════
+     Onglet NMOS — AUTONOME (manifeste sans `tab_group`) : le panneau porte `set-tab-nmos`, et NMOS
+     a son propre groupe dans la barre du haut (SET_GROUPS, settings.html). Ce n'est plus un
+     protocole de contrôle parmi d'autres : c'est le socle par lequel le produit se décrit, se fait
+     piloter, et pilote les autres. Sept rubriques dans un seul panneau était devenu illisible.
+
+     Les cinq sous-onglets suivent UN axe, et un seul : sommes-nous l'appareil, ou le contrôleur ?
+       Appareil / Ressources / Contrôle → nous vus par un contrôleur tiers (le monde ST 2110).
+       Bus MXL / Installation           → nous contrôleur (le monde MXL, et ce qu'on rend au site).
+     Ranger par numéro d'IS aurait obligé l'exploitant à connaître la spec pour trouver son réglage.
+
+     ⚠ Les panneaux portent `nmos-tab-<id>` : c'est la convention qu'attend `switchSubTab`, et
+     c'est elle qui met `#nmos/<id>` dans l'adresse. Un id qui s'en écarte donne un sous-onglet
+     qui s'affiche mais qu'aucun lien partagé ne peut rouvrir.
+     ══════════════════════════════════════════════════════════════════════════════════════════ -->
+<div id="set-tab-nmos" class="set-tab-content" style="display:none">
+
+<div class="subtabs">
+    <button class="subtab active" id="subtab-btn-nmos-appareil"
+            onclick="switchSubTab('nmos','appareil')">{{ _('settings.nmos.sub.appareil') }}</button>
+    <button class="subtab" id="subtab-btn-nmos-ressources"
+            onclick="switchSubTab('nmos','ressources')">{{ _('settings.nmos.sub.ressources') }}</button>
+    <button class="subtab" id="subtab-btn-nmos-controle"
+            onclick="switchSubTab('nmos','controle')">{{ _('settings.nmos.sub.controle') }}</button>
+    <button class="subtab" id="subtab-btn-nmos-mxl"
+            onclick="switchSubTab('nmos','mxl')">{{ _('settings.nmos.sub.mxl') }}</button>
+    <button class="subtab" id="subtab-btn-nmos-installation"
+            onclick="switchSubTab('nmos','installation')">{{ _('settings.nmos.sub.installation') }}</button>
+</div>
+
+<div id="nmos-tab-appareil">
+
     <h2>{{ _('service.nmos.provider_nmos_is_04_is_05') }}</h2>
     <div class="form">
         <div class="row">
@@ -99,47 +130,10 @@
         <div id="nmos_status_grouping" class="meta" style="margin-top:var(--space-2)"></div>
     </div>
 
-    <h2>{{ _('service.nmos.supervision_is_12_bcp_008') }}</h2>
-    <div class="form">
-        <div class="meta" style="margin-bottom:var(--space-2)">{{ _('service.nmos.is_12_est_le_protocole_de_controle_nmos_')|safe }}</div>
-        <div class="row" style="align-items:flex-end">
-            <div class="field" style="align-self:center"><label style="display:flex; align-items:center; gap:var(--space-2)">
-                <input type="checkbox" class="ios-toggle" id="s_nmos_is12_enabled">
-                {{ _('service.nmos.activer_is_12') }}
-            </label></div>
-            <div class="field"><label>{{ _('service.nmos.port_websocket') }}</label>
-                <input type="number" id="s_nmos_is12_port" class="num-stepper" min="1" max="65535" value="5010"></div>
-            <button class="btn btn-green" onclick="appliquerNmosIs12()">{{ _('service.nmos.appliquer') }}</button>
-            <div class="field" style="flex:1; min-width:280px"><label>{{ _('service.nmos.point_d_acces') }}</label>
-                <div id="nmos_is12_href" class="meta" style="font-family:var(--font-mono); font-size:0.8em">—</div></div>
-        </div>
-        <div class="meta">{{ _('service.nmos.port_distinct_de_l_ui_5000_le_serveur_de') }}</div>
-        <div class="row" style="align-items:flex-end; margin-top:var(--space-2)">
-            <div class="field" style="align-self:center"><label style="display:flex; align-items:center; gap:var(--space-2)">
-                <input type="checkbox" class="ios-toggle" id="s_nmos_is14_enabled" onchange="appliquerNmosIs14()">
-                {{ _('service.nmos.activer_is_14_configuration_api_en_http') }}
-            </label></div>
-            <div class="field" style="flex:1; min-width:300px"><label>{{ _('service.nmos.point_d_acces') }}</label>
-                <div id="nmos_is14_href" class="meta" style="font-family:var(--font-mono); font-size:0.8em">—</div></div>
-        </div>
-        <div class="meta">{{ _('service.nmos.le_meme_modele_qu_is_12_servi_en_rest_su')|safe }}</div>
-        <div class="row" style="margin-top:var(--space-2)">
-            <div class="field"><label>Sessions</label><div id="nmos_is12_sessions" class="meta">—</div></div>
-            <div class="field"><label>{{ _('service.nmos.moniteurs') }}</label><div id="nmos_is12_counts" class="meta">—</div></div>
-            <div class="field" style="flex:1"><label>{{ _('service.nmos.sans_telemetrie') }}</label>
-                <div id="nmos_is12_skipped" class="meta">—</div></div>
-        </div>
-        <div class="table-wrap" style="margin-top:var(--space-2)">
-            <table class="table" id="nmos_is12_table">
-                <thead><tr>
-                    <th>{{ _('service.nmos.ressource') }}</th><th>{{ _('service.nmos.sens') }}</th><th>Global</th><th>{{ _('service.nmos.lien') }}</th>
-                    <th>{{ _('service.nmos.connexion_emission') }}</th><th>{{ _('service.nmos.flux_essence') }}</th><th>PTP</th><th>Cause</th>
-                </tr></thead>
-                <tbody id="nmos_is12_tbody"><tr><td colspan="8" class="meta">—</td></tr></tbody>
-            </table>
-        </div>
-        <div class="meta" style="margin-top:var(--space-2)">{{ _('service.nmos.inactif_n_est_pas_une_panne_c_est_un_rec')|safe }}</div>
-    </div>
+
+</div>
+
+<div id="nmos-tab-ressources" style="display:none">
 
     <h2>{{ _('service.nmos.registre_de_ressources_cluster') }}</h2>
     <div class="form">
@@ -293,44 +287,57 @@
 </div>
 
 
-<!-- ══════════════════════════════════════════════════════════════════════════════════════════
-     SURFACES NMOS AVANCÉES
-     Chaque bascule ouvre une surface visible de l'EXTÉRIEUR. Le libellé dit ce qu'elle fait ;
-     la ligne `meta` en dessous dit ce qu'elle COÛTE ou ce qu'elle engage — c'est cette seconde
-     phrase qui manque d'habitude, et sans laquelle un exploitant coche sans savoir.
-     Toutes sont fermées par défaut sauf la surface MXL.
-     ══════════════════════════════════════════════════════════════════════════════════════════ -->
-<div class="card" style="margin-top:var(--space-4)">
-    <h2>{{ _('service.nmos.surfaces_avancees') }}</h2>
-    <div class="card-body">
 
-        <h4>{{ _('service.nmos.surface_mxl_bcp_007_03') }}</h4>
-        <div class="row">
-            <div class="field"><label>
-                <input type="checkbox" class="ios-toggle" id="s_nmos_mxl" onchange="appliquerNmosAvance()">
-                {{ _('service.nmos.publier_le_bus_mxl_en_nmos') }}
-            </label></div>
-            <div class="field"><label>
-                <input type="checkbox" class="ios-toggle" id="s_nmos_mxl_ecriture" onchange="appliquerNmosAvance()">
-                {{ _('service.nmos.autoriser_l_ecriture_is_05_sur_le_mxl') }}
-            </label></div>
-        </div>
-        <div class="meta">{{ _('service.nmos.meta_mxl')|safe }}</div>
+</div>
 
-        <h4 style="margin-top:var(--space-3)">{{ _('service.nmos.registre_is_04_embarque') }}</h4>
+<div id="nmos-tab-controle" style="display:none">
+
+    <h2>{{ _('service.nmos.supervision_is_12_bcp_008') }}</h2>
+    <div class="form">
+        <div class="meta" style="margin-bottom:var(--space-2)">{{ _('service.nmos.is_12_est_le_protocole_de_controle_nmos_')|safe }}</div>
         <div class="row" style="align-items:flex-end">
-            <div class="field" style="align-self:center"><label>
-                <input type="checkbox" class="ios-toggle" id="s_nmos_registre" onchange="appliquerNmosAvance()">
-                {{ _('service.nmos.heberger_un_registre') }}
+            <div class="field" style="align-self:center"><label style="display:flex; align-items:center; gap:var(--space-2)">
+                <input type="checkbox" class="ios-toggle" id="s_nmos_is12_enabled">
+                {{ _('service.nmos.activer_is_12') }}
             </label></div>
-            <div class="field"><label>{{ _('service.nmos.ramasse_miettes_s') }}</label>
-                <input type="number" id="s_nmos_registre_gc_s" class="num-stepper" min="4" max="120" value="12"
-                       onchange="appliquerNmosAvance()"></div>
-            <div class="field"><label>{{ _('service.nmos.priorite_dns_sd') }}</label>
-                <input type="number" id="s_nmos_registre_pri" class="num-stepper" min="0" max="255" value="100"
-                       onchange="appliquerNmosAvance()"></div>
+            <div class="field"><label>{{ _('service.nmos.port_websocket') }}</label>
+                <input type="number" id="s_nmos_is12_port" class="num-stepper" min="1" max="65535" value="5010"></div>
+            <button class="btn btn-green" onclick="appliquerNmosIs12()">{{ _('service.nmos.appliquer') }}</button>
+            <div class="field" style="flex:1; min-width:280px"><label>{{ _('service.nmos.point_d_acces') }}</label>
+                <div id="nmos_is12_href" class="meta" style="font-family:var(--font-mono); font-size:0.8em">—</div></div>
         </div>
-        <div class="meta">{{ _('service.nmos.meta_registre')|safe }}</div>
+        <div class="meta">{{ _('service.nmos.port_distinct_de_l_ui_5000_le_serveur_de') }}</div>
+        <div class="row" style="align-items:flex-end; margin-top:var(--space-2)">
+            <div class="field" style="align-self:center"><label style="display:flex; align-items:center; gap:var(--space-2)">
+                <input type="checkbox" class="ios-toggle" id="s_nmos_is14_enabled" onchange="appliquerNmosIs14()">
+                {{ _('service.nmos.activer_is_14_configuration_api_en_http') }}
+            </label></div>
+            <div class="field" style="flex:1; min-width:300px"><label>{{ _('service.nmos.point_d_acces') }}</label>
+                <div id="nmos_is14_href" class="meta" style="font-family:var(--font-mono); font-size:0.8em">—</div></div>
+        </div>
+        <div class="meta">{{ _('service.nmos.le_meme_modele_qu_is_12_servi_en_rest_su')|safe }}</div>
+        <div class="row" style="margin-top:var(--space-2)">
+            <div class="field"><label>Sessions</label><div id="nmos_is12_sessions" class="meta">—</div></div>
+            <div class="field"><label>{{ _('service.nmos.moniteurs') }}</label><div id="nmos_is12_counts" class="meta">—</div></div>
+            <div class="field" style="flex:1"><label>{{ _('service.nmos.sans_telemetrie') }}</label>
+                <div id="nmos_is12_skipped" class="meta">—</div></div>
+        </div>
+        <div class="table-wrap" style="margin-top:var(--space-2)">
+            <table class="table" id="nmos_is12_table">
+                <thead><tr>
+                    <th>{{ _('service.nmos.ressource') }}</th><th>{{ _('service.nmos.sens') }}</th><th>Global</th><th>{{ _('service.nmos.lien') }}</th>
+                    <th>{{ _('service.nmos.connexion_emission') }}</th><th>{{ _('service.nmos.flux_essence') }}</th><th>PTP</th><th>Cause</th>
+                </tr></thead>
+                <tbody id="nmos_is12_tbody"><tr><td colspan="8" class="meta">—</td></tr></tbody>
+            </table>
+        </div>
+        <div class="meta" style="margin-top:var(--space-2)">{{ _('service.nmos.inactif_n_est_pas_une_panne_c_est_un_rec')|safe }}</div>
+    </div>
+
+
+<div class="card" style="margin-top:var(--space-4)">
+    <h2>{{ _('service.nmos.conteneurs_et_plugins') }}</h2>
+    <div class="card-body">
 
         <h4 style="margin-top:var(--space-3)">{{ _('service.nmos.conteneurs_et_plugins') }}</h4>
         <div class="row">
@@ -349,6 +356,63 @@
         </div>
         <div class="meta">{{ _('service.nmos.meta_conteneurs')|safe }}</div>
 
+    </div>
+</div>
+
+</div>
+
+<div id="nmos-tab-mxl" style="display:none">
+
+<div class="card" style="margin-top:var(--space-4)">
+    <h2>{{ _('service.nmos.surface_mxl_bcp_007_03') }}</h2>
+    <div class="card-body">
+
+        <h4>{{ _('service.nmos.surface_mxl_bcp_007_03') }}</h4>
+        <div class="row">
+            <div class="field"><label>
+                <input type="checkbox" class="ios-toggle" id="s_nmos_mxl" onchange="appliquerNmosAvance()">
+                {{ _('service.nmos.publier_le_bus_mxl_en_nmos') }}
+            </label></div>
+            <div class="field"><label>
+                <input type="checkbox" class="ios-toggle" id="s_nmos_mxl_ecriture" onchange="appliquerNmosAvance()">
+                {{ _('service.nmos.autoriser_l_ecriture_is_05_sur_le_mxl') }}
+            </label></div>
+        </div>
+        <div class="meta">{{ _('service.nmos.meta_mxl')|safe }}</div>
+
+    </div>
+</div>
+
+</div>
+
+<div id="nmos-tab-installation" style="display:none">
+
+<div class="card" style="margin-top:var(--space-4)">
+    <h2>{{ _('service.nmos.registre_is_04_embarque') }}</h2>
+    <div class="card-body">
+
+        <h4 style="margin-top:var(--space-3)">{{ _('service.nmos.registre_is_04_embarque') }}</h4>
+        <div class="row" style="align-items:flex-end">
+            <div class="field" style="align-self:center"><label>
+                <input type="checkbox" class="ios-toggle" id="s_nmos_registre" onchange="appliquerNmosAvance()">
+                {{ _('service.nmos.heberger_un_registre') }}
+            </label></div>
+            <div class="field"><label>{{ _('service.nmos.ramasse_miettes_s') }}</label>
+                <input type="number" id="s_nmos_registre_gc_s" class="num-stepper" min="4" max="120" value="12"
+                       onchange="appliquerNmosAvance()"></div>
+            <div class="field"><label>{{ _('service.nmos.priorite_dns_sd') }}</label>
+                <input type="number" id="s_nmos_registre_pri" class="num-stepper" min="0" max="255" value="100"
+                       onchange="appliquerNmosAvance()"></div>
+        </div>
+        <div class="meta">{{ _('service.nmos.meta_registre')|safe }}</div>
+
+    </div>
+</div>
+
+<div class="card" style="margin-top:var(--space-4)">
+    <h2>{{ _('service.nmos.tally_is_07') }}</h2>
+    <div class="card-body">
+
         <h4 style="margin-top:var(--space-3)">{{ _('service.nmos.tally_is_07') }}</h4>
         <div class="row" style="align-items:flex-end">
             <div class="field" style="align-self:center"><label>
@@ -365,6 +429,13 @@
         </div>
         <div class="meta">{{ _('service.nmos.meta_is07')|safe }}</div>
 
+    </div>
+</div>
+
+<div class="card" style="margin-top:var(--space-4)">
+    <h2>{{ _('service.nmos.parametres_systeme_is_09') }}</h2>
+    <div class="card-body">
+
         <h4 style="margin-top:var(--space-3)">{{ _('service.nmos.parametres_systeme_is_09') }}</h4>
         <div class="row" style="align-items:flex-end">
             <div class="field" style="align-self:center"><label>
@@ -380,7 +451,10 @@
         <div class="meta">{{ _('service.nmos.meta_is09')|safe }}</div>
 
         <div class="meta" style="margin-top:var(--space-3)">{{ _('service.nmos.meta_redemarrage')|safe }}</div>
+
     </div>
+</div>
+
 </div>
 
 <script>
@@ -563,12 +637,19 @@
     };
     chargerNmosAvance();
 
+    // ⚠ Cette garde visait `protocoles-tab-nmos`, l'id d'AVANT la promotion de NMOS en groupe.
+    // Elle vit DANS le gabarit du service : corriger seulement `settings.html` l'aurait laissée
+    // pointer un id disparu, et la table des moniteurs aurait cessé de se rafraîchir sans un mot.
+    // On interroge maintenant le seul sous-onglet qui montre cette table.
     setInterval(function () {
-        const tab = document.getElementById('protocoles-tab-nmos');
-        if (tab && tab.style.display !== 'none' &&
-            document.getElementById('set-tab-protocoles')?.style?.display !== 'none') {
+        const onglet = document.getElementById('set-tab-nmos');
+        const sous   = document.getElementById('nmos-tab-controle');
+        if (onglet && onglet.style.display !== 'none' && sous && sous.style.display !== 'none') {
             rafraichirNmosIs12();
         }
     }, 3000);
 })();
 </script>
+
+
+</div>

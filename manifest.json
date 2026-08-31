@@ -1,8 +1,7 @@
 {
   "id": "nmos",
   "label": "NMOS",
-  "nav_tab": "protocoles",
-  "tab_group": "protocoles",
+  "nav_tab": "nmos",
   "tab_order": 0,
   "tab_template": "nmos/settings_tab.html",
   "settings_keys": {
