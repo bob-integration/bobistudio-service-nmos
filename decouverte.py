@@ -300,19 +300,60 @@ def joignable(base):
         return False
 
 
+# Registres dont une tentative vient d'échouer : url → instant de l'échec. On les met de côté un
+# temps, PAS définitivement — un registre qui redémarre doit pouvoir revenir.
+_penalises = {}
+PENALITE_S = 60.0
+
+
+def penaliser(url):
+    """Met un registre de côté pour `PENALITE_S`. Appelé quand une tentative RÉELLE a échoué."""
+    if url:
+        _penalises[url] = time.monotonic()
+
+
+def _en_penalite(url):
+    t = _penalises.get(url)
+    return t is not None and (time.monotonic() - t) < PENALITE_S
+
+
 def resoudre():
-    """(url, origine) du registre à utiliser. origine = 'réglage' | 'découverte' | None."""
+    """(url, origine) du registre à utiliser. origine = 'réglage' | 'découverte' | None.
+
+    ★ LA PRIORITÉ ANNONCÉE DÉCIDE, PAS MA SONDE. Première version : je ne retenais un registre que
+    s'il répondait à un GET préalable. C'était un filtre que la spec ne demande pas, et il a
+    exactement l'effet inverse de celui voulu — MESURÉ le 2026-08-31 : à chaque bascule, tous les
+    registres de secours étaient écartés (ils répondaient 503, le temps de leur mise en service)
+    et le journal disait « aucun autre disponible » alors que quatre étaient annoncés.
+
+    IS-04 dit : les registres s'annoncent avec des priorités, on les essaie DANS CET ORDRE. C'est
+    la tentative réelle qui tranche, pas un pronostic. La sonde ne sert plus qu'à DÉPARTAGER : à
+    priorité égale on préfère celui qui répond ; si aucun ne répond, on prend quand même le
+    meilleur par priorité et on laisse le client d'enregistrement constater.
+
+    Les registres dont une tentative vient d'échouer sont écartés une minute — sinon la bascule
+    reviendrait aussitôt sur le mort qu'elle vient de quitter."""
     from app.database import db_get_setting
     explicite = (db_get_setting("nmos_registry_url", "") or "").strip()
     if explicite:
         return explicite.rstrip("/"), "réglage"
     if not actif():
         return None, None
-    for r in decouvrir():
+    candidats = [r for r in decouvrir() if not _en_penalite(r["url"])]
+    if not candidats:
+        return None, None
+    # 1er choix : le meilleur par priorité QUI RÉPOND.
+    for r in candidats:
         if joignable(r["url"]):
             return r["url"], "découverte"
-        log.info("nmos/découverte : %s annoncé mais injoignable — on passe au suivant", r["url"])
-    return None, None
+        log.info("nmos/découverte : %s (pri=%d) ne répond pas à la sonde — il reste candidat",
+                 r["url"], r["pri"])
+    # Aucun ne répond : on essaie quand même le meilleur par priorité. Une sonde muette n'est pas
+    # une preuve de mort — un registre peut refuser un GET anonyme et accepter nos POST.
+    meilleur = candidats[0]
+    log.info("nmos/découverte : aucun registre ne répond à la sonde — on tente le mieux placé "
+             "(%s, pri=%d) et on laisse la tentative trancher", meilleur["url"], meilleur["pri"])
+    return meilleur["url"], "découverte"
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════

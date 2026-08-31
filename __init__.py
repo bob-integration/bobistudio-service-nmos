@@ -2831,6 +2831,9 @@ def _basculer_registre(mort):
             _state["registered"] = False
             try:
                 from . import decouverte as _d
+                # PÉNALISER avant de rechercher : sinon `resoudre()` re-choisit aussitôt le mort
+                # qu'on vient de quitter, et la bascule tourne en rond.
+                _d.penaliser(mort)
                 url, origine = _d.resoudre()
             except Exception as e:
                 log.warning("nmos: bascule — découverte impossible (%s)", e)
@@ -2872,11 +2875,17 @@ def _register_loop():
             _prochain = time.monotonic()
             while _running and _state["registry_url"] == reg:
                 # ★ CADENCE, PAS SOMMEIL. `sleep(HEARTBEAT_S)` puis un POST donne une période de
-                # HEARTBEAT_S **plus** le temps de la requête : on bat systématiquement en RETARD
-                # sur l'intervalle qu'on annonce, et le registre finit par nous compter comme
-                # défaillant. La suite AMWA le relève (« Heartbeats are not frequent enough »).
-                # On vise donc une échéance, et on garde une marge de 20 % pour la gigue réseau.
-                _prochain += HEARTBEAT_S * 0.8
+                # HEARTBEAT_S **plus** le temps de la requête : on bat en RETARD sur l'intervalle
+                # qu'on annonce, et le registre finit par nous compter défaillant. On vise donc
+                # une échéance.
+                #
+                # ⚠ EXACTEMENT L'INTERVALLE, sans marge. J'avais mis 20 % de marge « pour la
+                # gigue » : la suite AMWA est passée de « Heartbeats are not frequent enough » à
+                # « Heartbeats are too frequent ». Les deux bornes sont donc serrées autour de la
+                # valeur annoncée — battre trop vite n'est pas gratuit, c'est du trafic et de la
+                # charge sur un registre qui peut porter des centaines de Nodes. La bonne valeur
+                # est celle qu'on publie dans IS-09 (`is04.heartbeat_interval`), ni plus ni moins.
+                _prochain += HEARTBEAT_S
                 _delta = _prochain - time.monotonic()
                 if _delta > 0:
                     time.sleep(_delta)
