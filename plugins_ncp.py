@@ -44,6 +44,7 @@ garantir un parc à moitié migré le jour de l'attribution, et des `classId` in
 contrôleur ne signalera.
 """
 
+import json
 import logging
 import unicodedata
 
@@ -57,6 +58,7 @@ CLE_AUTORITE = 0
 
 CLASSE_PLUGIN = [1, 1, CLE_AUTORITE, 1]        # dérive NcBlock
 CLASSE_PARAMETRE = [1, 2, CLE_AUTORITE, 1]     # dérive NcWorker
+CLASSE_ACTION = [1, 2, CLE_AUTORITE, 2]        # dérive NcWorker
 
 
 def _prop(index, nom, type_nom, lecture_seule=True, nullable=False, description=""):
@@ -114,6 +116,40 @@ DESCRIPTEURS = [
         "events": [],
     },
 ]
+
+
+DESCRIPTEURS.append({
+    "description": "Une action discrète d'un plugin Bobi.Studio (charger, démarrer, rappeler…)",
+    "classId": CLASSE_ACTION,
+    "name": "NcBobiAction",
+    "fixedRole": None,
+    "properties": [
+        _prop(1, "actionId", "NcString", description="Identifiant de l'action au manifeste"),
+        _prop(2, "label", "NcString"),
+        # Les champs attendus sont DÉCRITS, pas déclarés en paramètres de méthode : voir Invoke.
+        _prop(3, "argumentFields", "NcString",
+              description="JSON : [{key, label, type, default, optional, optionsEndpoint}]"),
+        _prop(4, "fixedBody", "NcString", nullable=True,
+              description="JSON des champs FIXES portés par l'action (non modifiables)"),
+    ],
+    "methods": [{
+        "description": "Déclenche l'action. `argumentsJson` est un objet JSON {clé: valeur} dont "
+                       "les clés attendues sont décrites par la propriété argumentFields.",
+        "id": {"level": 3, "index": 1},
+        "name": "Invoke",
+        "resultDatatype": "NcMethodResult",
+        "parameters": [{
+            "description": "Objet JSON des arguments, ou null si l'action n'en prend pas",
+            "name": "argumentsJson",
+            "typeName": "NcString",
+            "isNullable": True,
+            "isSequence": False,
+            "constraints": None,
+        }],
+        "isDeprecated": False,
+    }],
+    "events": [],
+})
 
 
 def enregistrer_classes():
@@ -264,6 +300,80 @@ class Parametre(ncp.NcWorker):
         return None
 
 
+class Action(ncp.NcWorker):
+    """Une action discrète, déclenchable par `Invoke`.
+
+    ★ POURQUOI UNE MÉTHODE GÉNÉRIQUE ET NON UNE MÉTHODE TYPÉE PAR ACTION. MS-05-02 déclare les
+    paramètres d'une méthode STATIQUEMENT, par classe. Des méthodes typées par action exigeraient
+    une classe par action — donc un `classId` encodant un index qui n'a aucune source stable, et
+    qui glisserait dès qu'un plugin ajoute une action. C'est exactement le piège évité pour les
+    paramètres. On publie donc UNE méthode `Invoke(argumentsJson)` et on DÉCRIT les champs
+    attendus dans `argumentFields` : le contrôleur peut construire son formulaire, et le contrat
+    de classe ne dépend d'aucun manifeste."""
+
+    class_id = CLASSE_ACTION
+
+    def __init__(self, appareil, oid, role, owner, vmid, action):
+        super().__init__(appareil, oid, role, owner,
+                         user_label=action.get("label") or action.get("id"),
+                         description="Action %s" % action.get("id"))
+        self.vmid = vmid
+        self.action = action
+        champs = [{"key": p.get("key"), "label": p.get("label"), "type": p.get("type") or "text",
+                   "default": p.get("default"), "optional": bool(p.get("optional")),
+                   # Liste VIVANTE : le contrôleur doit interroger cet endpoint au moment de
+                   # composer son formulaire. Figer les options ici les périmerait aussitôt
+                   # (fichiers d'un lecteur, presets, sources disponibles…).
+                   "optionsEndpoint": p.get("options_endpoint")}
+                  for p in (action.get("params") or [])]
+        self._vals.update({
+            "actionId": action.get("id"),
+            "label": action.get("label") or action.get("id"),
+            "argumentFields": json.dumps(champs, ensure_ascii=False),
+            "fixedBody": json.dumps(action.get("body"), ensure_ascii=False)
+                         if action.get("body") else None,
+        })
+
+    def _enregistrer_methodes(self):
+        super()._enregistrer_methodes()
+        self._methodes[(3, 1)] = self._m_invoke
+
+    def _m_invoke(self, args):
+        brut = (args or {}).get("argumentsJson")
+        params = {}
+        if brut not in (None, ""):
+            try:
+                params = json.loads(brut) if isinstance(brut, str) else brut
+            except Exception as e:
+                return ncp.erreur(ncp.PARAMETER_ERROR, "argumentsJson n'est pas du JSON : %s" % e)
+            if not isinstance(params, dict):
+                return ncp.erreur(ncp.PARAMETER_ERROR,
+                                  "argumentsJson doit être un OBJET {clé: valeur}")
+        # Les clés inconnues sont REFUSÉES plutôt qu'ignorées : une faute de frappe silencieusement
+        # avalée ferait croire à l'opérateur que sa consigne est partie, alors que l'action
+        # s'exécuterait avec ses valeurs par défaut.
+        attendues = {p.get("key") for p in (self.action.get("params") or [])}
+        inconnues = set(params) - attendues
+        if inconnues:
+            return ncp.erreur(ncp.PARAMETER_ERROR,
+                              "argument(s) inconnu(s) : %s (attendus : %s)"
+                              % (sorted(inconnues), sorted(attendues) or "aucun"))
+        try:
+            _executer(self.vmid, self.action.get("id"), params)
+        except Exception as e:
+            log.warning("nmos/plugins: action %s sur vmid %s échouée : %s",
+                        self.action.get("id"), self.vmid, e)
+            return ncp.erreur(ncp.PARAMETER_ERROR, "l'action a échoué : %s" % e)
+        return ncp.ok()
+
+
+def _executer(vmid, action_id, params):
+    """Déclenche l'action par le chemin existant — qui valide l'action contre le manifeste,
+    applique les défauts, coerce les types et gère le cas `core: "recall"`."""
+    from app import macros
+    macros.exec_action(vmid, action_id, params)
+
+
 class BlocPlugin(ncp.NcBlock):
     """Un conteneur de plugin, avec ses paramètres en membres."""
 
@@ -287,6 +397,7 @@ class BlocPlugin(ncp.NcBlock):
 
 _blocs = {}          # vmid → BlocPlugin
 _params = {}         # (vmid, role) → Parametre
+_actions = {}        # (vmid, role) → Action
 
 
 def actif():
@@ -297,8 +408,18 @@ def actif():
     return str(_setting("nmos_plugins_ncp", "0")).strip() in ("1", "true", "on", "yes")
 
 
+def _actions_du_type(t):
+    """Actions déclarées au manifeste du type, hors celles sans endpoint ni `core`."""
+    from app import plugins as _plg
+    out = []
+    for a in ((_plg.get(t) or {}).get("actions") or []):
+        if a.get("id") and (a.get("endpoint") or a.get("core")):
+            out.append(a)
+    return out
+
+
 def _conteneurs_pilotables():
-    """[(conteneur, type)] des conteneurs dont le plugin déclare un `param_tree`."""
+    """[(conteneur, type)] des conteneurs dont le plugin déclare un `param_tree` OU des actions."""
     import json as _json
     from app import plugins as _plg
     from app.database import db_get_containers
@@ -310,7 +431,8 @@ def _conteneurs_pilotables():
         except Exception:
             continue
         t = (dc or {}).get("type")
-        if t and (_plg.get(t) or {}).get("param_tree"):
+        m = _plg.get(t) or {}
+        if t and (m.get("param_tree") or _actions_du_type(t)):
             out.append((c, t))
     return out
 
@@ -326,6 +448,7 @@ def sync(appareil, bloc_parent):
         for vmid in list(_blocs):
             appareil.retirer(bloc_parent, _blocs.pop(vmid))
         _params.clear()
+        _actions.clear()
         return
 
     voulus = {c["vmid"]: (c, t) for c, t in _conteneurs_pilotables()}
@@ -334,6 +457,8 @@ def sync(appareil, bloc_parent):
         appareil.retirer(bloc_parent, _blocs.pop(vmid))
         for cle in [k for k in _params if k[0] == vmid]:
             _params.pop(cle, None)
+        for cle in [k for k in _actions if k[0] == vmid]:
+            _actions.pop(cle, None)
 
     for vmid, (c, t) in voulus.items():
         bloc = _blocs.get(vmid)
@@ -362,12 +487,25 @@ def sync(appareil, bloc_parent):
             appareil.ajouter(bloc, p)
             _params[(vmid, role)] = p
 
-    log.info("MS-05-02 : %d plugin(s) pilotable(s), %d paramètre(s) publié(s)",
-             len(_blocs), len(_params))
+        # ── Actions ───────────────────────────────────────────────────────────────────────
+        # Rôle préfixé `action_` : sans ça, une action et un paramètre de même nom (« fond » sur
+        # hello_world, justement) se disputeraient la même adresse dans le bloc.
+        actes = {"action_" + _role(None, None, a["id"]): a for a in _actions_du_type(t)}
+        for cle in [k for k in _actions if k[0] == vmid and k[1] not in actes]:
+            appareil.retirer(bloc, _actions.pop(cle))
+        for role, a in actes.items():
+            if (vmid, role) in _actions:
+                continue
+            obj = Action(appareil, appareil.oid_libre(), role, bloc.oid, vmid, a)
+            appareil.ajouter(bloc, obj)
+            _actions[(vmid, role)] = obj
+
+    log.info("MS-05-02 : %d plugin(s) pilotable(s), %d paramètre(s) et %d action(s) publiés",
+             len(_blocs), len(_params), len(_actions))
 
 
 def etat():
     """Résumé pour l'UI et les bancs."""
     return {"actif": actif(), "cle_autorite": CLE_AUTORITE,
             "classes": [d["name"] for d in DESCRIPTEURS],
-            "blocs": len(_blocs), "parametres": len(_params)}
+            "blocs": len(_blocs), "parametres": len(_params), "actions": len(_actions)}
