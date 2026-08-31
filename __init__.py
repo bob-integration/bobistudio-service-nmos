@@ -47,6 +47,52 @@ REBUILD_FILET_S = 60.0
 
 bp = Blueprint("nmos", __name__)
 
+
+# ═════════════════════════════════════════════════════════════════════
+# CORS — exigé par IS-04 sur TOUTES les réponses des APIs NMOS
+# ═════════════════════════════════════════════════════════════════════
+# Un contrôleur NMOS est très souvent une page web servie depuis un AUTRE hôte : sans ces
+# en-têtes le navigateur refuse la réponse, et l'API paraît muette alors qu'elle répond 200.
+# Invisible en curl, invisible dans nos bancs, fatal pour un contrôleur tiers — c'est
+# exactement ce que la suite AMWA a trouvé le 2026-08-31 (quatorze tests sur un seul défaut).
+#
+# ⚠ Posé au niveau de l'APPLICATION, pas du blueprint. Un `bp.after_request` ne voit que les
+# vues du blueprint : un 404 sur un chemin `/x-nmos/` inconnu est rendu par Flask, hors
+# blueprint, et repartait donc SANS en-tête et en text/html. Or c'est une réponse d'API comme
+# une autre, et la suite la teste.
+
+_CORS_METHODES = "GET, PUT, POST, HEAD, OPTIONS, DELETE, PATCH"
+_CORS_ENTETES = "Content-Type, Accept, Authorization"
+
+
+def _est_nmos(chemin):
+    return (chemin or "").startswith("/x-nmos/")
+
+
+def installer_cors(app):
+    """Pose les en-têtes CORS et le rendu JSON des erreurs sur les seuls chemins `/x-nmos/`.
+
+    Bornée aux chemins NMOS À DESSEIN : ouvrir le reste de l'orchestrateur en `Allow-Origin: *`
+    exposerait des routes authentifiées par cookie aux requêtes d'un autre site."""
+    from flask import request as _rq, jsonify as _js
+
+    @app.after_request
+    def _cors(rep):
+        if _est_nmos(_rq.path):
+            rep.headers.setdefault("Access-Control-Allow-Origin", "*")
+            rep.headers.setdefault("Access-Control-Allow-Headers", _CORS_ENTETES)
+            rep.headers.setdefault("Access-Control-Allow-Methods", _CORS_METHODES)
+            rep.headers.setdefault("Access-Control-Max-Age", "3600")
+        return rep
+
+    @app.errorhandler(404)
+    def _404(_e):
+        # Hors NMOS on rend le 404 habituel : cette fonction est globale, elle ne doit pas
+        # transformer les erreurs de l'interface web en JSON.
+        if not _est_nmos(_rq.path):
+            return "Not Found", 404
+        return _js({"code": 404, "error": "resource not found", "debug": None}), 404
+
 # ═════════════════════════════════════════════════════════════════════
 # État global (singleton process-level)
 # ═════════════════════════════════════════════════════════════════════
