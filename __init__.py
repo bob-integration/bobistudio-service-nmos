@@ -1562,11 +1562,11 @@ def is04_root():
 
 @bp.route(f"/x-nmos/node/{IS04_VERSION}/", methods=["GET"])
 def is04_v_root():
-    return jsonify(["self/", "devices/", "sources/", "flows/", "senders/", "receivers/", "subscriptions/"])
-
-@bp.route(f"/x-nmos/node/{IS04_VERSION}/subscriptions", methods=["GET"])
-def is04_subscriptions():
-    return jsonify([])
+    # ⚠ EXACTEMENT ces six entrées. `subscriptions/` appartient à la QUERY API, pas à la Node
+    # API : le schéma IS-04 `nodeapi-base.json` ferme l'énumération et impose maxItems: 6. Nous
+    # l'annoncions, et servions une liste vide — un contrôleur pouvait en déduire que nous
+    # offrions un abonnement, ce que nous ne faisons pas ici (AMWA IS-04-01 auto_node_3).
+    return jsonify(["self/", "devices/", "sources/", "flows/", "senders/", "receivers/"])
 
 @bp.route("/x-nmos/connection/", methods=["GET"])
 def is05_root():
