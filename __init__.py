@@ -266,7 +266,14 @@ def _build_sender_resource(snd_id, did, fid, vmid, label, version, legs=1):
         "device_id": did,
         "flow_id": fid,
         "transport": "urn:x-nmos:transport:rtp.mcast",
-        "manifest_href": f"http://{host}:5000/x-nmos/connection/{IS05_VERSION}/single/senders/{snd_id}/transportfile",
+        # ★ `null` quand AUCUN conteneur ne sert ce sender (ressource orpheline gardée au
+        # registre). IS-04 dit qu'un `manifest_href` absent signifie « pas de fichier de
+        # transport » ; publier une URL qui répondra 503 dit au contrôleur que le SDP existe mais
+        # que le serveur est en panne — deux diagnostics opposés, dont un seul est vrai.
+        # Trouvé par AMWA IS-04-01 test_20_01.
+        "manifest_href": (
+            None if vmid is None else
+            f"http://{host}:5000/x-nmos/connection/{IS05_VERSION}/single/senders/{snd_id}/transportfile"),
         "interface_bindings": _iface_bindings(vmid, legs),
         "subscription": {"receiver_id": None, "active": False},
         "caps": {},
@@ -290,7 +297,7 @@ _CAP = "urn:x-nmos:cap:"
 _cs_video_cache = {}        # texte brut du réglage → liste de Constraint Sets déjà construite
 
 
-def _video_constraint_sets():
+def _video_constraint_sets(media_type="video/raw"):
     """Un Constraint Set par format vidéo déclaré au site. Liste vide si le réglage est vide —
     l'appelant n'annonce alors PAS `constraint_sets` du tout (cf. `_build_receiver_resource`).
 
@@ -303,8 +310,13 @@ def _video_constraint_sets():
     from app import video_formats as _vf
     from app import settings as _s
     brut = _s.get("video_formats") or ""
-    if brut in _cs_video_cache:
-        return _cs_video_cache[brut]
+    # ⚠ La clé du cache inclut le media_type : un receiver MXL et un receiver 2110 partagent les
+    # mêmes formats mais PAS le même type de média. Sans lui, le premier appelant imposait son
+    # media_type à tous les suivants — c'est ainsi qu'un receiver MXL a fini par annoncer
+    # `media_types: ['video/x-mxl-planar']` avec des Constraint Sets disant `video/raw`.
+    cle = (brut, media_type)
+    if cle in _cs_video_cache:
+        return _cs_video_cache[cle]
     sets = []
     for f in _vf.formats(brut):
         souci = _vf.anomalie(f)
@@ -317,7 +329,7 @@ def _video_constraint_sets():
         num, den = _vf.frame_rate(f)
         cs = {
             f"{_CAP}meta:label":            f["label"],
-            f"{_CAP}format:media_type":     {"enum": ["video/raw"]},
+            f"{_CAP}format:media_type":     {"enum": [media_type]},
             f"{_CAP}format:frame_width":    {"enum": [f["w"]]},
             f"{_CAP}format:frame_height":   {"enum": [f["h"]]},
             f"{_CAP}format:grain_rate":     {"enum": [{"numerator": num, "denominator": den}]},
@@ -332,12 +344,13 @@ def _video_constraint_sets():
         # transfert, et une contrainte omise vaut « pas de contrainte » là où une contrainte
         # devinée (« SDR ») ferait rejeter une source HLG ou PQ par ailleurs acceptable.
         sets.append(cs)
-    _cs_video_cache.clear()          # borne le cache : un seul réglage vit à la fois
-    _cs_video_cache[brut] = sets
+    if len(_cs_video_cache) > 8:     # borne le cache : quelques (réglage, media_type) suffisent
+        _cs_video_cache.clear()
+    _cs_video_cache[cle] = sets
     return sets
 
 
-def _audio_constraint_sets():
+def _audio_constraint_sets(media_type="audio/L24"):
     """Constraint Set audio. Valeurs prises sur le moteur, pas sur le réglage : `A_CHANNELS = 8`,
     L24/48 kHz sont FIXES dans `plugins/2110_io/docker/controller.py` (le RX écrit du 8 canaux L24
     tel quel dans le shm). D'où un `enum` à 8 et non un `maximum` : le moteur ne sait pas recevoir
@@ -347,13 +360,13 @@ def _audio_constraint_sets():
     (`AUDIO_PTIME`), donc le contrôleur ne peut pas en faire une vérité de site."""
     return [{
         f"{_CAP}meta:label":            "ST 2110-30 — 8 canaux L24 48 kHz",
-        f"{_CAP}format:media_type":     {"enum": ["audio/L24"]},
+        f"{_CAP}format:media_type":     {"enum": [media_type]},
         f"{_CAP}format:channel_count":  {"enum": [8]},
         f"{_CAP}format:sample_rate":    {"enum": [{"numerator": 48000, "denominator": 1}]},
     }]
 
 
-def _receiver_caps(fmt, media_types):
+def _receiver_caps(fmt, media_types, version=None):
     """`caps` d'un receiver — avec `constraint_sets` + `version` quand on a quelque chose de VRAI
     à déclarer (BCP-004-01 exige les deux ensemble, jamais l'un sans l'autre).
 
@@ -362,13 +375,16 @@ def _receiver_caps(fmt, media_types):
     n'apprendrait rien à personne."""
     caps = {"media_types": media_types}
     sets = {"video": _video_constraint_sets, "audio": _audio_constraint_sets}.get(fmt)
-    sets = sets() if sets else []
+    sets = sets(media_types[0]) if sets else []
     if sets:
         caps["constraint_sets"] = sets
-        # `version` de caps : horodatage TAI du dernier changement des capacités. Il suit ici la
-        # version de la ressource — nos capacités ne bougent que quand les réglages bougent, et un
-        # changement de réglage passe par une ré-annonce complète.
-        caps["version"] = _tai_version()
+        # `version` de caps : horodatage TAI du dernier changement des capacités. Il suit celle de
+        # la ressource — nos capacités ne bougent que quand les réglages bougent, et un changement
+        # de réglage passe par une ré-annonce complète.
+        # ⚠ On REÇOIT la version, on ne la recalcule pas. Un `_tai_version()` frais ici tombait
+        # quelques microsecondes APRÈS celle de la ressource, et IS-04 interdit une `caps.version`
+        # postérieure à la version de la ressource qui la porte (AMWA IS-04-01 test_27_2).
+        caps["version"] = version or _tai_version()
     return caps
 
 
@@ -384,7 +400,7 @@ def _build_receiver_resource(rid, did, vmid, recv_idx, label, version, fmt="vide
         "transport": "urn:x-nmos:transport:rtp.mcast",
         "format": f"urn:x-nmos:format:{fmt}",
         "subscription": {"sender_id": None, "active": False},
-        "caps": _receiver_caps(fmt, media_types),
+        "caps": _receiver_caps(fmt, media_types, version),
         "interface_bindings": _iface_bindings(vmid, legs),
     }
 
@@ -649,14 +665,11 @@ def _build_node_resource(version):
         "services": [],
         "caps": {},
         "clocks": [{"name": "clk0", "ref_type": "internal"}],
-        "interfaces": [{
-            "name": _primary_iface(),
-            # IS-04 v1.3 autorise null, mais certains clients (Buttons, Zod strict)
-            # exigent une string. On remplit avec la MAC de la NIC principale
-            # (format AMWA : 6 octets hex séparés par des tirets, minuscules).
-            "chassis_id": _mac_address(_primary_iface()),
-            "port_id":    _mac_address(_primary_iface()),
-        }],
+        # Toute interface citée dans un `interface_bindings` DOIT figurer ici (IS-04) : la NIC du
+        # contrôleur, plus les NIC média 2110 de chaque nœud, par lesquelles sortent réellement
+        # les flux. Ne déclarer que la première laissait un contrôleur tiers incapable de savoir
+        # par où passe le signal.
+        "interfaces": _interfaces_node(),
     }
 
 def _setting(key, default):
@@ -746,6 +759,61 @@ def _mac_address(iface):
     except Exception:
         pass
     return "00-00-00-00-00-00"
+
+def _interfaces_node():
+    """Tableau `interfaces` du Node : la NIC du contrôleur + les NIC média de tous les nœuds."""
+    prim = _primary_iface()
+    # `chassis_id`/`port_id` : IS-04 v1.3 autorise null, mais certains clients (Buttons, Zod
+    # strict) exigent une string. On remplit avec la MAC quand on l'a.
+    ifs = [{"name": prim, "chassis_id": _mac_address(prim), "port_id": _mac_address(prim)}]
+    for nom, mac in sorted(_interfaces_media_cluster().items()):
+        if nom == prim:
+            continue
+        ifs.append({"name": nom,
+                    "chassis_id": mac or "00-00-00-00-00-00",
+                    "port_id":    mac or "00-00-00-00-00-00"})
+    return ifs
+
+
+def _mac_amwa(brut):
+    """MAC au format AMWA (six octets hex minuscules séparés par des tirets), ou None."""
+    if not brut:
+        return None
+    v = str(brut).strip().lower().replace(":", "-")
+    return v if len(v.split("-")) == 6 else None
+
+
+def _interfaces_media_cluster():
+    """{nom: MAC} des NIC média 2110 de TOUS les nœuds enrôlés.
+
+    ★ POURQUOI. IS-04 exige que tout nom cité dans un `interface_bindings` figure dans le tableau
+    `interfaces` du Node. Or nous ne déclarions QUE la NIC du contrôleur, pendant que nos Senders
+    se liaient à la NIC 2110 du nœud qui les héberge : un contrôleur tiers ne pouvait donc pas
+    savoir par où sortent nos flux. Trouvé par AMWA IS-04-01 test_19.
+
+    ⚠ Déduplication PAR NOM, et c'est une limite assumée du plan 1 : nous publions UN Node pour
+    tout le cluster, alors que les noms d'interface sont propres à chaque machine. Deux nœuds
+    nommant tous deux `ens1f0np0` sont indiscernables ici. On le signale plutôt que de le taire —
+    le jour où ça arrive, c'est le modèle qu'il faut trancher, pas ce tableau qu'il faut bricoler.
+    """
+    out = {}
+    try:
+        from app.database import db_get_nodes, db_get_node_interfaces
+        for n in db_get_nodes():
+            for r in db_get_node_interfaces(n["id"]):
+                if r.get("role") != "media2110" or not r.get("ifname"):
+                    continue
+                nom, mac = r["ifname"], _mac_amwa(r.get("mac"))
+                if nom in out and out[nom] != mac:
+                    log.warning("IS-04 : deux nœuds déclarent une interface « %s » avec des MAC "
+                                "différentes — un contrôleur tiers ne pourra pas les distinguer",
+                                nom)
+                    continue
+                out[nom] = mac
+    except Exception as e:
+        log.warning("IS-04 : interfaces média du cluster illisibles (%s)", e)
+    return out
+
 
 GROUPHINT_TAG = "urn:x-nmos:tag:grouphint/v1.0"
 
@@ -1423,6 +1491,22 @@ def is04_device(did):
 def is04_receivers():
     with _lock:
         return jsonify(list(_receivers.values()))
+
+@bp.route(f"/x-nmos/node/{IS04_VERSION}/receivers/<rid>/target", methods=["PUT"])
+def node_receiver_target(rid):
+    """IS-04 : `PUT /receivers/{id}/target` — DÉPRÉCIÉ, remplacé par IS-05.
+
+    On ne l'implémente pas : le routage passe par la Connection API, et deux chemins d'écriture
+    concurrents vers le même état est exactement ce qu'on refuse par ailleurs.
+
+    Mais la spec distingue « je ne sais pas faire » de « ce chemin n'existe pas » : elle attend
+    **501**, pas 404. Un 404 dit à un contrôleur ancien que la ressource est introuvable — il en
+    conclut que le Receiver n'existe pas, au lieu de basculer sur IS-05. C'est la différence entre
+    un refus lisible et une panne muette (AMWA IS-04-01 test_13 / test_14).
+    """
+    return jsonify({"code": 501, "error": "endpoint déprécié — utiliser IS-05 (Connection API)",
+                    "debug": None}), 501
+
 
 @bp.route(f"/x-nmos/node/{IS04_VERSION}/receivers/<rid>", methods=["GET"])
 def is04_receiver(rid):

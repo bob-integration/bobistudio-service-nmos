@@ -350,7 +350,7 @@ def _build_sender(snd_id, did, fid, vmid, hostname, label, version):
 def _build_receiver(rid, did, vmid, hostname, label, essence, version):
     from . import _receiver_caps
     fmt = "video" if essence == "video" else ("audio" if essence == "audio" else "data")
-    caps = _receiver_caps(fmt, [_MEDIA_TYPE.get(essence, _MEDIA_TYPE["data"])])
+    caps = _receiver_caps(fmt, [_MEDIA_TYPE.get(essence, _MEDIA_TYPE["data"])], version)
     return {
         "id": rid,
         "version": version,
