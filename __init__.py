@@ -1255,6 +1255,19 @@ def rebuild_model():
         if rid in _recv_state:
             _recv_state[rid]["vmid"] = sv
 
+    # ── Tally IS-07 ──────────────────────────────────────────────────────────────────────────
+    # Sources et Flows seulement : pas de Sender tant que le transport WebSocket n'est pas servi
+    # (annoncer un Sender sans son transport promettrait un abonnement qui n'arriverait jamais).
+    try:
+        from . import is07 as _i7
+        _r7 = _i7.ressources(cluster_did, version)
+        for _s in _r7["sources"]:
+            new_sources[_s["id"]] = _s
+        for _f in _r7["flows"]:
+            new_flows[_f["id"]] = _f
+    except Exception as e:
+        log.warning("nmos: ressources IS-07 non construites (%s)", e)
+
     # ── Surface MXL (BCP-007-03) ──────────────────────────────────────────────────────────────
     # Ajoutée APRÈS les passes conteneurs et registre : elle ne partage rien avec elles (identité
     # dérivée, hors `nmos_resources`) et ne doit surtout pas perturber leurs invariants. Les états
@@ -3943,3 +3956,6 @@ _registre.enregistrer(bp)
 
 from . import supervision_tiers as _sup_tiers  # noqa: E402
 _sup_tiers.enregistrer(bp)
+
+from . import is07 as _is07  # noqa: E402
+_is07.enregistrer(bp)
