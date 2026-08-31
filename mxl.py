@@ -219,7 +219,7 @@ def _tags(vmid, hostname):
 # LISIBLE au lieu de le rendre surprenant.
 
 def _groupes(ports, base):
-    """{clé de port → (group_name, role)} pour une direction (produces OU consumes).
+    """{clé de port → (group_name, role)} pour UNE direction (produces OU consumes).
 
     Règle : les flux vidéo ouvrent les bundles ; audio et données rejoignent le bundle de MÊME
     RANG dans leur propre essence. Un conteneur à une seule vidéo (le cas courant) = un seul
@@ -232,7 +232,14 @@ def _groupes(ports, base):
     Une règle indexée sur `slot` tombe juste sur ces deux-là par coïncidence, et mésapparie dès
     qu'un plugin déclare deux vidéos avec des slots globaux. Le rang dans sa propre essence, lui,
     ne dépend d'aucune convention de plugin. Un groupe FAUX est pire que pas de groupe : il
-    affirme au contrôleur que des ports sans rapport vont ensemble."""
+    affirme au contrôleur que des ports sans rapport vont ensemble.
+
+    ⚠ `base` DOIT différer entre les deux directions — c'est à l'appelant de le garantir. Les deux
+    appels partageaient le libellé du conteneur, si bien que le Sender du flux 01 (ce que le
+    conteneur PUBLIE sur le bus) et le Receiver de l'entrée 01 (ce qu'il CONSOMME) recevaient le
+    même `groupe:rôle`. BCP-002-01 exige un rôle unique par groupe, et surtout : ces deux flux
+    n'ont rien à voir l'un avec l'autre. Les réunir affirmait au contrôleur un lien qui n'existe
+    pas — 76 doublons sur le parc, trouvés par AMWA IS-04-01 test_23."""
     from . import pad_index
     rangs = {}
     for p in ports:
@@ -455,8 +462,10 @@ def _build_one(c, new_devices, new_sources, new_flows, new_senders, new_receiver
     params = (_dc or {}).get("params") or {}
     domain_id = _domain_id(c.get("node_id"))
     label_base = hostname or ("conteneur %s" % vmid)
-    grp_tx = _groupes(ports["produces"], label_base)
-    grp_rx = _groupes(ports["consumes"], label_base)
+    # Deux bases DISTINCTES : les sorties d'un conteneur (ce qu'il publie sur le bus) et ses
+    # entrées (ce qu'il y consomme) sont des ensembles séparés. Cf. l'avertissement de `_groupes`.
+    grp_tx = _groupes(ports["produces"], "%s sorties" % label_base)
+    grp_rx = _groupes(ports["consumes"], "%s entrées" % label_base)
 
     for p in ports["produces"]:
         shm = (p.get("shm") or "").strip()
