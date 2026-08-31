@@ -401,19 +401,18 @@ def build(new_devices, new_sources, new_flows, new_senders, new_receivers,
     commit sous verrou. Best-effort : un conteneur illisible est sauté, jamais fatal — le
     provider IS-04/05 du 2110 ne doit pas tomber parce qu'un plugin a un wiring douteux.
 
-    Renvoie l'ensemble des ids de ressources MXL créées (senders + receivers), pour que
-    l'appelant sache lesquelles ne relèvent PAS de la machinerie RTP."""
+    Ne renvoie rien : savoir si une ressource relève de la surface MXL se demande à
+    `est_mxl()`, qui lit l'état — une valeur de retour que personne ne consomme finirait par
+    mentir sans que rien ne le signale."""
     from app.database import db_get_containers
-    ids = set()
     if _setting_off():
-        return ids
+        return
     for c in db_get_containers():
         try:
             _build_one(c, new_devices, new_sources, new_flows, new_senders, new_receivers,
-                       recv_state, send_state, cluster_did, version, ids)
+                       recv_state, send_state, cluster_did, version)
         except Exception as e:
             log.warning("nmos/mxl: conteneur %s ignoré : %s", c.get("vmid"), e)
-    return ids
 
 
 def est_mxl(res_id, send_state, recv_state):
@@ -430,18 +429,18 @@ def ecriture_ouverte():
     d'être accepté et de créer une seconde vérité de routage à côté de la page Câbles.
     Le réglage `nmos_mxl_ecriture` lève le verrou pour éprouver le chemin d'écriture."""
     from . import _setting
-    return str(_setting("nmos_mxl_ecriture", "0")).strip() in ("1", "true", "on", "yes")
+    return str(_setting("nmos_mxl_ecriture", "0")).strip().lower() in ("1", "true", "on", "yes")
 
 
 def _setting_off():
     """Réglage `nmos_mxl` (défaut : activé). Un site qui ne veut pas exposer son bus interne aux
     contrôleurs tiers coupe la surface d'un cran, sans toucher au 2110."""
     from . import _setting
-    return str(_setting("nmos_mxl", "1")).strip() in ("0", "false", "off", "no")
+    return str(_setting("nmos_mxl", "1")).strip().lower() in ("0", "false", "off", "no")
 
 
 def _build_one(c, new_devices, new_sources, new_flows, new_senders, new_receivers,
-               recv_state, send_state, cluster_did, version, ids):
+               recv_state, send_state, cluster_did, version):
     vmid = c["vmid"]
     iu = c.get("instance_uuid") or ("vmid:%s" % vmid)
     hostname = c.get("hostname") or ""
@@ -475,7 +474,6 @@ def _build_one(c, new_devices, new_sources, new_flows, new_senders, new_receiver
         new_senders[snd] = _build_sender(snd, cluster_did, fid, vmid, hostname, lbl, version)
         _poser_grouphint(new_senders[snd], grp_tx[p["key"]])
         new_devices[cluster_did]["senders"].append(snd)
-        ids.add(snd)
         # Un Sender MXL est ACTIF par construction : le conteneur écrit ce flux tant qu'il tourne.
         # Il n'y a rien à « activer » — d'où master_enable=True et des transport_params RÉELS.
         st = empty_staged("sender", domain_id, flow_uuid(shm))
@@ -484,10 +482,10 @@ def _build_one(c, new_devices, new_sources, new_flows, new_senders, new_receiver
         send_state[snd] = {
             "staged": st, "active": _clone(st), "vmid": vmid, "essence": ess,
             "mxl": True, "shm": shm, "slot": slot,
-            # `receiver_id` posé par un contrôleur au patch : c'est une information de ROUTAGE
-            # qui lui appartient, on ne l'écrase pas à chaque rebuild.
-            **({"receiver_id": prev.get("receiver_id")} if prev else {}),
         }
+        # `receiver_id` posé par un contrôleur au patch : c'est une information de ROUTAGE qui
+        # lui appartient, on ne l'écrase pas à chaque rebuild. Il vit dans staged/active — le
+        # ranger AUSSI à la racine de l'état créait un doublon que personne ne relisait.
         if prev and (prev.get("staged") or {}).get("receiver_id"):
             send_state[snd]["staged"]["receiver_id"] = prev["staged"]["receiver_id"]
             send_state[snd]["active"]["receiver_id"] = (prev.get("active") or {}).get("receiver_id")
@@ -500,7 +498,6 @@ def _build_one(c, new_devices, new_sources, new_flows, new_senders, new_receiver
         new_receivers[rid] = _build_receiver(rid, cluster_did, vmid, hostname, lbl, ess, version)
         _poser_grouphint(new_receivers[rid], grp_rx[p["key"]])
         new_devices[cluster_did]["receivers"].append(rid)
-        ids.add(rid)
         # L'état IS-05 d'un Receiver MXL est un CONSTAT du câble réellement posé (params du
         # conteneur), pas une mémoire. `_apply_wire` est le seul à écrire le câblage, et il peut
         # être déclenché hors NMOS (page Câbles, restauration de projet, insertion d'UDC) : une

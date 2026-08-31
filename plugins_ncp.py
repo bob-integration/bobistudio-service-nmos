@@ -405,7 +405,7 @@ def actif():
     CONTRAT que d'autres mémoriseront ; on ne l'ouvre pas sans que l'exploitant l'ait demandé,
     d'autant que la clé d'autorité est encore `0` (CID IEEE en attente)."""
     from . import _setting
-    return str(_setting("nmos_plugins_ncp", "0")).strip() in ("1", "true", "on", "yes")
+    return str(_setting("nmos_plugins_ncp", "0")).strip().lower() in ("1", "true", "on", "yes")
 
 
 def _actions_du_type(t):

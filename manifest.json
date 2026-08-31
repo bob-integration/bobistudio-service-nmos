@@ -81,6 +81,30 @@
     "nmos_is14_enabled": {
       "type": "bool",
       "default": false
+    },
+    "nmos_mxl": {
+      "type": "bool",
+      "default": true
+    },
+    "nmos_mxl_ecriture": {
+      "type": "bool",
+      "default": false
+    },
+    "nmos_registre": {
+      "type": "bool",
+      "default": false
+    },
+    "nmos_registre_gc_s": {
+      "type": "int",
+      "default": 12
+    },
+    "nmos_registre_pri": {
+      "type": "int",
+      "default": 100
+    },
+    "nmos_plugins_ncp": {
+      "type": "bool",
+      "default": false
     }
   },
   "version": "0.4.1",

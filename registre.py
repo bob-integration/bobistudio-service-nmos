@@ -26,11 +26,17 @@ Nodes peut-être morts, que plus aucun battement ne viendrait démentir — un r
 pire qu'un registre vide. Après un redémarrage, les Nodes se ré-enregistrent : c'est le
 comportement prévu par la spec (404 sur le battement → ré-enregistrement).
 
-**Nos propres ressources n'y sont PAS injectées ici.** Elles sont servies par notre Node API
-(`/x-nmos/node/…`). Les agréger dans la vue Query est utile — un contrôleur veut UN point
-d'interrogation — mais c'est une décision distincte, à prendre en voyant ce que ça fait aux
-identifiants. Tant que ce n'est pas tranché, la Query API ne rend QUE ce qui s'est enregistré :
-elle ne prétend pas être exhaustive, et son inventaire dit donc la vérité sur ce qu'il contient.
+**Nos propres ressources n'y sont pas INJECTÉES — elles s'y ENREGISTRENT.** L'agrégation a été
+tranchée le 2026-08-31, et sans code nouveau : `nmos_registry_url` pointé sur nous-mêmes suffit,
+le client d'enregistrement existant nous inscrit ici par le protocole, comme n'importe quel Node.
+Un chemin d'injection dédié aurait dupliqué un modèle qui change à chaque rebuild, avec la
+divergence pour seule perspective. Vérifié : la Query API rend alors 270 senders / 219 receivers,
+identiques au Node API.
+
+⚠ Deux conséquences de ce montage, mesurées et corrigées côté client (cf. `_register_all`) : à
+notre échelle l'enregistrement dure ~9 s, donc il faut BATTRE pendant ; et un POST étant un
+upsert, il faut EFFACER ce qui a disparu du modèle, sinon le registre garde des ressources mortes
+jusqu'à l'expiration du Node entier.
 """
 
 import json
@@ -54,7 +60,10 @@ _SINGULIER = {v: k for k, v in _PLURIEL.items()}
 GC_DEFAUT_S = 12          # valeur recommandée par IS-04
 
 _verrou = threading.RLock()
-# type → {id → {"data": dict, "node": <node_id>, "vu": <monotonic>}}
+# type → {id → {"data": dict}}. On ne range NI le node propriétaire NI un horodatage :
+# le rattachement sert au REFUS d'une ressource orpheline à l'enregistrement, et l'expiration se
+# décide sur `_sante` seul. Les stocker aurait donné deux sources pour la même information, dont
+# une jamais relue — celle qui se met à mentir en silence.
 _res = {t: {} for t in TYPES}
 _sante = {}               # node_id → monotonic du dernier battement
 _reaper = None
@@ -68,7 +77,7 @@ def actif():
     """Le registre est-il servi ? NON par défaut : c'est une surface EXTERNE de plus, et on
     n'en ouvre pas une sans que l'exploitant l'ait demandée."""
     from . import _setting
-    return str(_setting("nmos_registre", "0")).strip() in ("1", "true", "on", "yes")
+    return str(_setting("nmos_registre", "0")).strip().lower() in ("1", "true", "on", "yes")
 
 
 def _gc_s():
@@ -250,7 +259,7 @@ def enregistrer(bp):
                                          "Device avant leurs ressources",
                                 "debug": rid}), 400
             neuf = rid not in _res[type_]
-            _res[type_][rid] = {"data": data, "node": node, "vu": time.monotonic()}
+            _res[type_][rid] = {"data": data}
             if type_ == "node":
                 _sante[rid] = time.monotonic()
             _assurer_reaper()
