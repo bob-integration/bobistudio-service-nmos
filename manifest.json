@@ -117,6 +117,14 @@
     "nmos_is07": {
       "type": "bool",
       "default": false
+    },
+    "nmos_is07_ws": {
+      "type": "bool",
+      "default": false
+    },
+    "nmos_is07_port": {
+      "type": "int",
+      "default": 5011
     }
   },
   "version": "0.4.1",

@@ -23,17 +23,30 @@ Notre tally vaut `off`, `red`, `green` ou `amber`. IS-07 prévoit exactement ce 
 Le réduire à un booléen aurait demandé de décider quelle couleur signifie « à l'antenne » — une
 décision d'exploitation qui n'appartient pas à ce module, et qui aurait effacé l'ambre et le vert.
 
-═══ Ce que ce module NE fait PAS encore ══════════════════════════════════════════════════════
+═══ Le transport WebSocket ═══════════════════════════════════════════════════════════════════
 
-**Il ne publie pas de Sender.** Un Sender IS-07 annonce un transport (WebSocket ou MQTT) sur
-lequel les états sont POUSSÉS ; nous ne servons pas encore ce transport. Annoncer un Sender sans
-lui, ce serait promettre un abonnement qui n'arriverait jamais — exactement le genre de panne
-muette qu'on refuse ailleurs. On publie donc les **Sources et les Flows** en IS-04, plus l'Events
-API en REST : un contrôleur lit l'état courant par interrogation. Le transport WebSocket est la
-suite, et c'est lui qui apportera la notification.
+Le Sender n'est publié QUE si le transport est réellement servi (`nmos_is07_ws`) : annoncer un
+Sender sans son serveur promettrait un abonnement qui n'arriverait jamais.
+
+Protocole (IS-07 § Transport - Websocket), côté serveur :
+  · le client envoie `{"command": "subscription", "sources": [...]}` → on **renvoie aussitôt
+    l'état courant** de chaque source demandée. « Each time a client submits its subscriptions
+    list… the server will resend all the current states » ;
+  · le client bat toutes les 5 s (`{"command": "health", "timestamp": "sec:nsec"}`) ;
+  · **au bout de 12 s sans battement**, on efface ses abonnements et on ferme — la spec le dit et
+    le chiffre (2 battements manqués + 2 s de latence).
+
+On pousse sur CHANGEMENT, en s'accrochant au signal du service TSL (`_tally_dirty`), comme le fait
+son propre distributeur. Interroger en boucle aurait fabriqué de la latence là où la donnée est
+déjà événementielle.
 """
 
+import json
 import logging
+import socket
+import socketserver
+import struct
+import threading
 import time
 
 from flask import jsonify
@@ -49,6 +62,10 @@ VALEURS = ("off", "red", "green", "amber")
 
 # Niveaux TSL, tels que le service les range (`tally_base`, +1, +2).
 NIVEAUX = ((0, "LH"), (1, "RH"), (2, "TT"))
+
+PORT_DEFAUT = 5011          # IS-12 occupe 5010 ; même motif : Waitress ne sait pas faire l'upgrade
+SANTE_TIMEOUT_S = 12        # IS-07 : 2 battements manqués (5 s) + 2 s de latence
+TRANSPORT = "urn:x-nmos:transport:websocket"
 
 
 def actif():
@@ -111,11 +128,39 @@ def _ts():
 # Ressources IS-04
 # ══════════════════════════════════════════════════════════════════════════════════════════════
 
+def _snd(shm, niveau):
+    from . import _stable_uuid
+    return _stable_uuid("is07:sender:%s:%d" % (shm, niveau))
+
+
+def transport_params(sid):
+    """`transport_params` IS-05 d'un Sender IS-07 sur WebSocket (§ Transport - Websocket).
+
+    « All senders on one NMOS device should offer the same `connection_uri` to allow the number of
+    WebSocket connections needed to be reduced » — on sert donc UNE seule URI pour toutes les
+    sources, et le client discrimine par `ext_is_07_source_id`."""
+    from . import _get_host_address
+    cible = _par_id().get(sid)
+    if not cible:
+        return {}
+    return {
+        "connection_uri": href(),
+        "connection_authorization": False,
+        "ext_is_07_source_id": sid,
+        "ext_is_07_rest_api_url": "http://%s:5000%s/sources/%s"
+                                  % (_get_host_address(), BASE, sid),
+    }
+
+
 def ressources(device_id, version):
-    """{"sources": [...], "flows": [...]} à verser au modèle IS-04. Pas de Sender : cf. l'entête."""
+    """{"sources": [...], "flows": [...], "senders": [...]} à verser au modèle IS-04.
+
+    ★ Les Senders ne sont publiés QUE si le transport WebSocket est réellement servi : un Sender
+    annonce une URI sur laquelle les états sont POUSSÉS, et l'annoncer sans serveur promettrait un
+    abonnement qui n'arriverait jamais."""
     if not actif():
-        return {"sources": [], "flows": []}
-    srcs, flows = [], []
+        return {"sources": [], "flows": [], "senders": [], "connection": {}}
+    srcs, flows, senders, conn = [], [], [], {}
     for shm, _idx, niveau, nom in _sources():
         sid, fid = _sid(shm, niveau), _fid(shm, niveau)
         lbl = "Tally %s — %s" % (nom, shm)
@@ -137,7 +182,27 @@ def ressources(device_id, version):
             "media_type": "application/json",
             "event_type": TYPE_EVENEMENT,
         })
-    return {"sources": srcs, "flows": flows}
+        if ws_actif():
+            from . import _primary_iface
+            senders.append({
+                "id": _snd(shm, niveau), "version": version, "label": lbl,
+                "description": "Sender d'événements tally (IS-07 / WebSocket)",
+                "tags": {"urn:x-mxl:shm": [shm]},
+                "device_id": device_id, "flow_id": fid,
+                "transport": TRANSPORT,
+                # IS-07 n'a pas de fichier de transport : la connexion se décrit entièrement par
+                # les transport_params, comme pour MXL.
+                "manifest_href": None,
+                "interface_bindings": [_primary_iface()],
+                "subscription": {"receiver_id": None, "active": False},
+                "caps": {},
+            })
+            etat = {"receiver_id": None, "master_enable": True,
+                    "transport_params": [transport_params(sid)],
+                    "activation": {"mode": None, "requested_time": None,
+                                   "activation_time": None}}
+            conn[_snd(shm, niveau)] = {"staged": etat, "active": json.loads(json.dumps(etat))}
+    return {"sources": srcs, "flows": flows, "senders": senders, "connection": conn}
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════
@@ -216,3 +281,253 @@ def enregistrer(bp):
         if e is None:
             return jsonify({"code": 404, "error": "source inconnue", "debug": sid}), 404
         return jsonify(e)
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# Transport WebSocket (IS-07 § Transport - Websocket)
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# Serveur écrit à la main, comme celui d'IS-12 et pour la même raison : Waitress ne sait pas faire
+# l'upgrade WebSocket, et aucune bibliothèque n'est installée. Le cadrage est celui de RFC 6455 ;
+# côté serveur les trames sortantes ne sont PAS masquées, les entrantes DOIVENT l'être.
+
+GUID_WS = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+TAILLE_MAX = 1 << 18
+
+_serveur = None
+_sessions = set()
+_sessions_lock = threading.RLock()
+_arret = threading.Event()
+
+
+def ws_actif():
+    from . import _setting
+    return (actif()
+            and str(_setting("nmos_is07_ws", "0")).strip().lower() in ("1", "true", "on", "yes"))
+
+
+def _port():
+    from . import _setting
+    try:
+        return int(_setting("nmos_is07_port", PORT_DEFAUT) or PORT_DEFAUT)
+    except (TypeError, ValueError):
+        return PORT_DEFAUT
+
+
+def href():
+    from . import _get_host_address
+    return "ws://%s:%d" % (_get_host_address(), _port())
+
+
+class _Session:
+    """Un client connecté : ses abonnements et la date de son dernier battement."""
+
+    def __init__(self, conn):
+        self.conn = conn
+        self.sources = set()
+        self.sante = time.monotonic()
+        self.lock = threading.Lock()
+
+    def envoyer(self, message):
+        charge = json.dumps(message).encode("utf-8")
+        n = len(charge)
+        entete = bytearray([0x81])
+        if n < 126:
+            entete.append(n)
+        elif n < (1 << 16):
+            entete.append(126); entete += struct.pack("!H", n)
+        else:
+            entete.append(127); entete += struct.pack("!Q", n)
+        with self.lock:
+            self.conn.sendall(bytes(entete) + charge)
+
+
+class _Handler(socketserver.BaseRequestHandler):
+
+    def handle(self):
+        import base64
+        import hashlib
+        try:
+            entete = self._lire_entete()
+        except Exception:
+            return
+        cle = ""
+        for ligne in entete.split("\r\n"):
+            if ligne.lower().startswith("sec-websocket-key:"):
+                cle = ligne.split(":", 1)[1].strip()
+        if not cle:
+            self.request.sendall(b"HTTP/1.1 400 Bad Request\r\n\r\n")
+            return
+        accept = base64.b64encode(
+            hashlib.sha1((cle + GUID_WS).encode("ascii")).digest()).decode("ascii")
+        self.request.sendall(
+            ("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+             "Sec-WebSocket-Accept: %s\r\n\r\n" % accept).encode("ascii"))
+
+        sess = _Session(self.request)
+        with _sessions_lock:
+            _sessions.add(sess)
+        try:
+            self._boucle(sess)
+        except Exception:
+            pass
+        finally:
+            with _sessions_lock:
+                _sessions.discard(sess)
+
+    def _lire_entete(self):
+        tampon = b""
+        self.request.settimeout(5)
+        while b"\r\n\r\n" not in tampon:
+            bloc = self.request.recv(4096)
+            if not bloc:
+                raise IOError("fermé")
+            tampon += bloc
+            if len(tampon) > 65536:
+                raise IOError("en-tête déraisonnable")
+        self._reste = tampon.split(b"\r\n\r\n", 1)[1]
+        return tampon.split(b"\r\n\r\n", 1)[0].decode("latin-1")
+
+    def _lire_exactement(self, n):
+        while len(self._reste) < n:
+            bloc = self.request.recv(65536)
+            if not bloc:
+                raise IOError("fermé")
+            self._reste += bloc
+        out, self._reste = self._reste[:n], self._reste[n:]
+        return out
+
+    def _boucle(self, sess):
+        self.request.settimeout(2)
+        while not _arret.is_set():
+            try:
+                b1, b2 = struct.unpack("!BB", self._lire_exactement(2))
+            except socket.timeout:
+                # ⚠ C'est ICI que la spec est chiffrée : 12 s sans battement → on efface les
+                # abonnements et on ferme. Garder une session muette ouverte ferait croire à une
+                # supervision en place alors que plus personne n'écoute.
+                if time.monotonic() - sess.sante > SANTE_TIMEOUT_S:
+                    log.info("IS-07 : session sans battement depuis %ds — fermée", SANTE_TIMEOUT_S)
+                    return
+                continue
+            opcode, masque, longueur = b1 & 0x0F, bool(b2 & 0x80), b2 & 0x7F
+            if longueur == 126:
+                longueur = struct.unpack("!H", self._lire_exactement(2))[0]
+            elif longueur == 127:
+                longueur = struct.unpack("!Q", self._lire_exactement(8))[0]
+            if longueur > TAILLE_MAX or opcode == 0x8:
+                return
+            if not masque:
+                return          # RFC 6455 §5.1 : trame client non masquée → on ferme
+            k = self._lire_exactement(4)
+            charge = bytearray(self._lire_exactement(longueur))
+            for i in range(longueur):
+                charge[i] ^= k[i & 3]
+            if opcode not in (0x1, 0x2):
+                continue
+            try:
+                msg = json.loads(bytes(charge).decode("utf-8"))
+            except Exception:
+                continue
+            self._traiter(sess, msg)
+
+    def _traiter(self, sess, msg):
+        cmd = msg.get("command")
+        if cmd == "health":
+            sess.sante = time.monotonic()
+            sess.envoyer({"timing": {"origin_timestamp": msg.get("timestamp") or _ts(),
+                                     "creation_timestamp": _ts()},
+                          "message_type": "health"})
+        elif cmd == "subscription":
+            connues = set(_par_id())
+            demandees = set(msg.get("sources") or [])
+            sess.sources = demandees & connues
+            sess.sante = time.monotonic()
+            # « Each time a client submits its subscriptions list … the server will resend all the
+            # current states » — sans ce renvoi, un abonné resterait aveugle jusqu'au prochain
+            # changement, qui peut ne jamais venir.
+            for sid in sess.sources:
+                e = etat_source(sid)
+                if e:
+                    sess.envoyer(e)
+
+
+class _Serveur(socketserver.ThreadingTCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+def _pousser(sids):
+    """Envoie l'état courant de ces sources à tous les abonnés concernés."""
+    with _sessions_lock:
+        sessions = list(_sessions)
+    for sid in sids:
+        e = etat_source(sid)
+        if not e:
+            continue
+        for s in sessions:
+            if sid in s.sources:
+                try:
+                    s.envoyer(e)
+                except Exception:
+                    pass
+
+
+def _veille():
+    """Pousse sur CHANGEMENT, en s'accrochant au signal du service TSL — le même que celui qui
+    réveille son propre distributeur. Interroger en boucle fabriquerait de la latence là où la
+    donnée est déjà événementielle."""
+    dernier = {}
+    while not _arret.is_set():
+        try:
+            from services import tsl
+            tsl._tally_dirty.wait(timeout=0.5)
+            change = []
+            for sid, (_shm, idx, niveau, _nom) in _par_id().items():
+                v = _valeur(idx, niveau)
+                if dernier.get(sid) != v:
+                    dernier[sid] = v
+                    change.append(sid)
+            if change:
+                _pousser(change)
+        except Exception as e:                                       # pragma: no cover
+            log.debug("IS-07 : veille (%s)", e)
+            _arret.wait(1)
+
+
+def demarrer():
+    """Ouvre le serveur WebSocket si `nmos_is07_ws` est posé. Idempotent."""
+    global _serveur
+    if not ws_actif() or _serveur is not None:
+        return False
+    _arret.clear()
+    try:
+        _serveur = _Serveur(("0.0.0.0", _port()), _Handler)
+    except Exception as e:
+        log.warning("IS-07 : serveur WebSocket non démarré (%s)", e)
+        _serveur = None
+        return False
+    threading.Thread(target=_serveur.serve_forever, daemon=True, name="is07-ws").start()
+    threading.Thread(target=_veille, daemon=True, name="is07-veille").start()
+    log.info("IS-07 : transport WebSocket sur %s", href())
+    return True
+
+
+def arreter():
+    global _serveur
+    _arret.set()
+    if _serveur is not None:
+        try:
+            _serveur.shutdown()
+            _serveur.server_close()
+        except Exception:
+            pass
+        _serveur = None
+    with _sessions_lock:
+        _sessions.clear()
+
+
+def etat_ws():
+    with _sessions_lock:
+        return {"actif": ws_actif(), "href": href() if ws_actif() else None,
+                "sessions": len(_sessions),
+                "abonnements": sum(len(s.sources) for s in _sessions)}

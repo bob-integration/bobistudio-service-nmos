@@ -1265,6 +1265,12 @@ def rebuild_model():
             new_sources[_s["id"]] = _s
         for _f in _r7["flows"]:
             new_flows[_f["id"]] = _f
+        for _sd in _r7.get("senders") or []:
+            new_senders[_sd["id"]] = _sd
+            new_devices[cluster_did]["senders"].append(_sd["id"])
+            _c7 = (_r7.get("connection") or {}).get(_sd["id"])
+            if _c7:
+                _send_state[_sd["id"]] = dict(_c7, vmid=None, essence="data", is07=True)
     except Exception as e:
         log.warning("nmos: ressources IS-07 non construites (%s)", e)
 
@@ -1719,6 +1725,14 @@ def _mxl_verrouille(res_id):
     routes PATCH unitaires — et les endpoints BULK (`/bulk/receivers`, `/bulk/senders`), qui
     appellent `_apply_*_staged` en direct, la contournaient intégralement. Un garde conditionné à
     QUI APPELLE ne protège que celui-là : il faut le mettre là où tout le monde passe."""
+    # IS-07 : un Sender d'événements n'a rien de patchable — sa connexion est décrite par ses
+    # transport_params statiques, et sa valeur vient du tally. Le refuser explicitement vaut mieux
+    # que de le laisser tomber dans la logique RTP, qui rendrait une erreur incompréhensible.
+    if (_send_state.get(res_id) or {}).get("is07"):
+        return 405, {"code": 405,
+                     "error": "un Sender IS-07 n'est pas patchable : sa connexion est statique et "
+                              "son état vient du tally",
+                     "debug": res_id}
     from . import mxl as _mxl
     if not _mxl.est_mxl(res_id, _send_state, _recv_state) or _mxl.ecriture_ouverte():
         return None
