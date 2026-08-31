@@ -234,9 +234,10 @@ def _groupes(ports, base):
     ne dépend d'aucune convention de plugin. Un groupe FAUX est pire que pas de groupe : il
     affirme au contrôleur que des ports sans rapport vont ensemble.
 
-    ⚠ `base` DOIT différer entre les deux directions — c'est à l'appelant de le garantir. Les deux
-    appels partageaient le libellé du conteneur, si bien que le Sender du flux 01 (ce que le
-    conteneur PUBLIE sur le bus) et le Receiver de l'entrée 01 (ce qu'il CONSOMME) recevaient le
+    ⚠ `base` DOIT différer entre les deux directions — c'est à l'appelant de le garantir (il y pose
+    `Out` / `In`, par rapport au bus). Les deux appels partageaient le libellé du conteneur, si bien
+    que le Sender du flux 01 (ce que le conteneur PUBLIE sur le bus) et le Receiver de l'entrée 01
+    (ce qu'il CONSOMME) recevaient le
     même `groupe:rôle`. BCP-002-01 exige un rôle unique par groupe, et surtout : ces deux flux
     n'ont rien à voir l'un avec l'autre. Les réunir affirmait au contrôleur un lien qui n'existe
     pas — 76 doublons sur le parc, trouvés par AMWA IS-04-01 test_23."""
@@ -462,10 +463,16 @@ def _build_one(c, new_devices, new_sources, new_flows, new_senders, new_receiver
     params = (_dc or {}).get("params") or {}
     domain_id = _domain_id(c.get("node_id"))
     label_base = hostname or ("conteneur %s" % vmid)
-    # Deux bases DISTINCTES : les sorties d'un conteneur (ce qu'il publie sur le bus) et ses
-    # entrées (ce qu'il y consomme) sont des ensembles séparés. Cf. l'avertissement de `_groupes`.
-    grp_tx = _groupes(ports["produces"], "%s sorties" % label_base)
-    grp_rx = _groupes(ports["consumes"], "%s entrées" % label_base)
+    # Deux bases DISTINCTES : ce que le conteneur PUBLIE sur le bus et ce qu'il y CONSOMME sont
+    # des ensembles séparés. Cf. l'avertissement de `_groupes`.
+    #
+    # ⚠ `Out`/`In` et NON `Tx`/`Rx`, délibérément. Ces deux-là se lisent par rapport AU BUS. Sur le
+    # moteur 2110, les Senders MXL sont le côté RX du moteur : il reçoit du 2110 et publie sur le
+    # bus. Nommer ce groupe « Tx » entrerait en collision avec le vocabulaire Rx/Tx déjà employé
+    # sur le MÊME appareil pour la face 2110 — et cette confusion existe déjà dans les libellés
+    # (un Receiver MXL s'appelle « 2110-20 sender #1 »). On ne la propage pas aux groupes.
+    grp_tx = _groupes(ports["produces"], "%s Out" % label_base)
+    grp_rx = _groupes(ports["consumes"], "%s In" % label_base)
 
     for p in ports["produces"]:
         shm = (p.get("shm") or "").strip()
