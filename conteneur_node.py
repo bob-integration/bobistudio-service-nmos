@@ -107,8 +107,17 @@ def document(conteneur):
         "connection": {"senders": {}, "receivers": {}},
     }
 
-    grp_tx = mxl._groupes(ports["produces"], hostname)
-    grp_rx = mxl._groupes(ports["consumes"], hostname)
+    # ⚠ DEUX BASES DISTINCTES, `Out` / `In` par rapport au bus — exactement comme le plan 1
+    # (cf. mxl.py). Les deux appels partageaient `hostname`, si bien que le Sender du flux 01 et
+    # le Receiver de l'entrée 01 recevaient le même `groupe:rôle` : 75 doublons sur le moteur, et
+    # même `delay`, avec son unique paire, en portait un.
+    #
+    # ★ La suite AMWA ne pouvait PAS le voir : elle teste la Node API de l'ORCHESTRATEUR, pas
+    # celle des conteneurs — c'est-à-dire exactement la surface qu'on vient d'ouvrir. Un défaut
+    # corrigé d'un côté et laissé de l'autre est le mode de panne normal quand la même dérivation
+    # sert à deux endroits : ici la fonction est partagée, seuls les appelants divergeaient.
+    grp_tx = mxl._groupes(ports["produces"], "%s Out" % hostname)
+    grp_rx = mxl._groupes(ports["consumes"], "%s In" % hostname)
     params = _params(conteneur)
 
     for p in ports["produces"]:
