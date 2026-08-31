@@ -2282,6 +2282,30 @@ def _activate_receiver(rid):
     state = _recv_state[rid]
     # Copie profonde du staged dans active
     state["active"] = json.loads(json.dumps(state["staged"]))
+    # ── IS-07 : ce Receiver n'a pas d'agent ni de SDP, il ouvre une ÉCOUTE ────────────────────
+    # ★ ET IL SORT ICI. La suite de cette fonction s'adresse à un receiver RTP : elle lit
+    # `state["vmid"]` et `state["recv_idx"]`, qui n'existent pas pour un Receiver d'événements —
+    # on tomberait sur une KeyError au milieu d'une activation qu'un contrôleur croit réussie.
+    if state.get("is07"):
+        act = state["active"]
+        tp = (act.get("transport_params") or [{}])[0]
+        srcs = [x for x in [tp.get("ext_is_07_source_id")] if x]
+        try:
+            from .is07_entrant import activer as _activer_is07
+            diag = _activer_is07(rid, bool(act.get("master_enable")),
+                                 tp.get("connection_uri"), srcs)
+        except Exception as e:
+            diag = "erreur : %s" % e
+            log.warning("nmos: activation IS-07 de %s refusée (%s)", rid, e)
+        with _lock:
+            if rid in _receivers:
+                _receivers[rid]["subscription"] = {
+                    "sender_id": act.get("sender_id") if act.get("master_enable") else None,
+                    "active": bool(act.get("master_enable")),
+                }
+                _receivers[rid]["version"] = _tai_version()
+        log.info("nmos: Receiver IS-07 %s — %s", rid, diag)
+        return
     # Mettre à jour la subscription côté resource IS-04
     sender_id = state["active"].get("sender_id")
     master_enable = bool(state["active"].get("master_enable"))
@@ -3115,6 +3139,15 @@ def start(registry_url):
 def stop():
     global _running, _register_thread
     from . import is12, is14
+    # ★ LES ÉCOUTES IS-07 D'ABORD. Chacune tient un fil et une socket vers un émetteur tiers, et
+    # elle RECONNECTE : ne pas les arrêter laisserait, après un stop, des clients qui rebouclent
+    # dans le vide et des contributions de tally figées sur leur dernière valeur — un rouge
+    # allumé sans plus personne pour le mettre à jour.
+    try:
+        from . import is07_entrant
+        is07_entrant.arreter_tout()
+    except Exception as e:
+        log.warning("nmos: arrêt des écoutes IS-07 : %s", e)
     for nom, mod in (("IS-12", is12), ("IS-14", is14)):
         try:
             mod.stop()
