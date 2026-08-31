@@ -125,6 +125,14 @@
     "nmos_is07_port": {
       "type": "int",
       "default": 5011
+    },
+    "nmos_is09": {
+      "type": "bool",
+      "default": false
+    },
+    "nmos_is09_pri": {
+      "type": "int",
+      "default": 100
     }
   },
   "version": "0.4.1",

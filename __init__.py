@@ -2766,6 +2766,15 @@ def _mdns_services_a_publier(addr_bytes):
             _ajouter("nmos-query", dict(avec_pri))
     except Exception as e:
         log.warning("nmos: registre non interrogeable pour l'annonce mDNS (%s)", e)
+    try:
+        from . import is09 as _i9
+        if _i9.actif():
+            # Même prudence que pour le registre : `pri` par défaut à 100 (« développement »).
+            # Une System API qui s'annonce en priorité de production détournerait les équipements
+            # d'une installation déjà en place vers NOTRE domaine PTP.
+            _ajouter("nmos-system", dict(txt_commun, pri=str(_i9._pri())))
+    except Exception as e:
+        log.warning("nmos: IS-09 non interrogeable pour l'annonce mDNS (%s)", e)
     return out
 
 
@@ -3973,3 +3982,6 @@ _sup_tiers.enregistrer(bp)
 
 from . import is07 as _is07  # noqa: E402
 _is07.enregistrer(bp)
+
+from . import is09 as _is09  # noqa: E402
+_is09.enregistrer(bp)
