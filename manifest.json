@@ -132,6 +132,10 @@
     "nmos_is09_pri": {
       "type": "int",
       "default": 100
+    },
+    "nmos_decouverte": {
+      "type": "bool",
+      "default": false
     }
   },
   "version": "0.4.1",
