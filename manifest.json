@@ -109,6 +109,10 @@
     "nmos_conteneur_node": {
       "type": "bool",
       "default": false
+    },
+    "nmos_supervision_tiers": {
+      "type": "bool",
+      "default": false
     }
   },
   "version": "0.4.1",

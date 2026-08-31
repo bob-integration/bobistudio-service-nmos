@@ -3940,3 +3940,6 @@ _is14.enregistrer(bp)
 # toujours, mais répondent 501 tant que l'exploitant n'a pas ouvert cette surface externe.
 from . import registre as _registre  # noqa: E402
 _registre.enregistrer(bp)
+
+from . import supervision_tiers as _sup_tiers  # noqa: E402
+_sup_tiers.enregistrer(bp)
