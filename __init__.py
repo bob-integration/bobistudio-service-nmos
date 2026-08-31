@@ -1385,6 +1385,9 @@ def rebuild_model():
             _c7 = (_r7.get("connection") or {}).get(_sd["id"])
             if _c7:
                 _send_state[_sd["id"]] = dict(_c7, vmid=None, essence="data", is07=True)
+        # Receivers de tally ENTRANT, un par groupe de SORTIE. Construits APRÈS la surface MXL
+        # dans l'ordre d'exécution ? Non : ils lisent `_senders`, donc ils doivent venir après
+        # que les Senders MXL y sont posés. C'est fait plus bas, cf. `_ajouter_receivers_is07`.
     except Exception as e:
         log.warning("nmos: ressources IS-07 non construites (%s)", e)
 
@@ -1404,6 +1407,22 @@ def rebuild_model():
         _mxl.resync_subscriptions(new_receivers, _recv_state, new_senders, _send_state)
     except Exception as e:
         log.warning("nmos: surface MXL non construite (%s) — le provider 2110 continue", e)
+
+    # ── Receivers de tally ENTRANT (IS-07), un par groupe de SORTIE ───────────────────────────
+    # APRÈS la surface MXL, et l'ordre n'est pas indifférent : ils se dérivent des grouphints
+    # posés sur les Senders MXL. Les construire avant, c'est n'en produire aucun — en silence.
+    try:
+        from . import is07 as _i7r
+        if _i7r.entrant_actif():
+            _r7r = _i7r.receivers_depuis(new_senders, cluster_did, version)
+            for _rc in _r7r["receivers"]:
+                new_receivers[_rc["id"]] = _rc
+                new_devices[cluster_did]["receivers"].append(_rc["id"])
+                _c = (_r7r.get("connection") or {}).get(_rc["id"])
+                if _c:
+                    _recv_state[_rc["id"]] = dict(_c, vmid=None, essence="data", is07=True)
+    except Exception as e:
+        log.warning("nmos: receivers IS-07 non construits (%s)", e)
 
     with _lock:
         _devices.clear();   _devices.update(new_devices)

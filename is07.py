@@ -11,9 +11,11 @@ Notre tally est adressé **par FLUX** : la table de correspondance TSL associe
 **une Source IS-07 par (flux, niveau)** — ce qui s'aligne exactement sur les flux MXL déjà exposés
 en BCP-007-03, sans inventer une seconde façon de désigner les mêmes signaux.
 
-Les niveaux LH / RH / TT viennent du modèle TSL. On les publie **tels quels**, dans le libellé :
-les traduire en « program » et « preview » serait une convention de site, et la présumer ferait
-mentir l'étiquette chez qui ne l'applique pas.
+Un niveau est une entité NOMMÉE de `tally_levels` (« Antenne », « Plateau »…), pas un décalage
+dans une trame : on publie son libellé tel que l'exploitant l'a écrit. Les traduire en « program »
+et « preview » serait une convention de site, et la présumer ferait mentir l'étiquette chez qui
+ne l'applique pas. Un flux n'a de niveaux que ceux des connexions qui l'adressent — publier tous
+les niveaux du site pour chaque flux inventerait des Sources qui ne changent jamais.
 
 ═══ Le type d'événement : une ÉNUMÉRATION, pas un booléen ════════════════════════════════════
 
@@ -60,8 +62,6 @@ BASE = "/x-nmos/events/" + VERSION
 TYPE_EVENEMENT = "string/enum/Tally"
 VALEURS = ("off", "red", "green", "amber")
 
-# Niveaux TSL, tels que le service les range (`tally_base`, +1, +2).
-NIVEAUX = ((0, "LH"), (1, "RH"), (2, "TT"))
 
 PORT_DEFAUT = 5011          # IS-12 occupe 5010 ; même motif : Waitress ne sait pas faire l'upgrade
 SANTE_TIMEOUT_S = 12        # IS-07 : 2 battements manqués (5 s) + 2 s de latence
@@ -88,10 +88,13 @@ def _fid(shm, niveau):
 
 
 def _sources():
-    """[(shm, tsl_index, niveau, nom_niveau)] — un par (flux tallyé, niveau)."""
+    """[(shm, tsl_index, niveau, nom_niveau)] — un par (flux tallyé, niveau qui l'adresse)."""
     try:
-        from app.database import db_get_tsl_mappings_all
+        from app.database import (db_get_tsl_mappings_all, db_get_tsl_connections,
+                                  db_get_tally_levels)
         mappings = db_get_tsl_mappings_all() or []
+        niveau_de_conn = {c["id"]: c.get("level_id") for c in (db_get_tsl_connections() or [])}
+        nom_de_niveau = {n["id"]: (n.get("nom") or "") for n in (db_get_tally_levels() or [])}
     except Exception as e:
         log.warning("nmos/is07 : table de correspondance TSL illisible (%s)", e)
         return []
@@ -99,14 +102,17 @@ def _sources():
     for m in mappings:
         shm = m["source_shm"]
         idx = m["tsl_index"]
-        # Un même flux peut être mappé sur PLUSIEURS connexions TSL (deux pupitres). Le tally reste
-        # le même signal : on ne le publie qu'une fois, sinon un contrôleur verrait des doublons
-        # qui changent ensemble sans qu'il puisse savoir lequel fait foi.
-        if shm in vus:
+        niveau = niveau_de_conn.get(m.get("connection_id"))
+        if not niveau:
+            continue          # connexion sans niveau : elle n'écrit rien, il n'y a rien à publier
+        # Un même flux peut être mappé sur PLUSIEURS connexions TSL. Sur des niveaux DIFFÉRENTS,
+        # ce sont des signaux différents et on publie les deux ; sur le MÊME niveau, c'est le même
+        # signal, et le publier deux fois ferait voir à un contrôleur des doublons qui changent
+        # ensemble sans qu'il puisse savoir lequel fait foi.
+        if (shm, niveau) in vus:
             continue
-        vus.add(shm)
-        for niveau, nom in NIVEAUX:
-            out.append((shm, idx, niveau, nom))
+        vus.add((shm, niveau))
+        out.append((shm, idx, niveau, nom_de_niveau.get(niveau) or ("niveau %d" % niveau)))
     return out
 
 
@@ -204,6 +210,95 @@ def ressources(device_id, version):
             conn[_snd(shm, niveau)] = {"staged": etat, "active": json.loads(json.dumps(etat))}
     return {"sources": srcs, "flows": flows, "senders": senders, "connection": conn}
 
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# Receivers — le tally ENTRANT, sur nos SORTIES
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# ★ SUR LES SORTIES, PAS SUR LES CONSOMMATEURS. Le tally est une propriété du SIGNAL, pas de qui
+# le regarde : un scope n'a pas besoin qu'on lui ENVOIE un tally, il affiche celui de la source
+# qu'il observe, et l'orchestrateur sait déjà laquelle. Une première conception plaçait un Receiver
+# sur chaque consommateur — mauvaise cardinalité (un multiview à 16 tuiles en voudrait 16) et
+# surtout mauvais endroit.
+#
+# ★ UN PAR GROUPE BCP-002-01, pas par essence. Un groupe EST un signal : sa vidéo, son audio, ses
+# données auxiliaires et son état d'antenne appartiennent au même objet.
+#
+# ★ AUTORITÉ RÉSOLUE PAR COLONNE. Chaque émetteur externe écrit son PROPRE niveau, exactement
+# comme une connexion TSL a les siens. Il n'y a donc jamais deux autorités sur une même valeur, et
+# le cumul reste une opération explicite côté consommateur (une liste de niveaux combinés en OU).
+# C'est ce modèle qui rend la question « qui gagne ? » sans objet, plutôt qu'un arbitrage.
+#
+# ⚠ DÉCLARÉS pour toutes les sorties, ACTIVABLES une par une : `nmos_is07_entrant` est fermé par
+# défaut, et l'activation IS-05 n'est acceptée que sur une sortie ouverte. Un contrôleur voit donc
+# un REFUS explicite plutôt qu'un silence — et laisser un tiers écrire l'état d'antenne sans que
+# personne l'ait demandé serait exactement ce qu'on refuse partout ailleurs dans ce service.
+
+def entrant_actif():
+    from . import _setting
+    return str(_setting("nmos_is07_entrant", "0")).strip().lower() in ("1", "true", "on", "yes")
+
+
+def _rid_recv(groupe):
+    from . import _stable_uuid
+    return _stable_uuid("is07:receiver:%s" % groupe)
+
+
+def _groupes_de_sortie(senders):
+    """[(groupe, libellé)] des groupes BCP-002-01 côté SORTIE, dédupliqués.
+
+    On lit les grouphints déjà posés sur les Senders MXL plutôt que de recalculer un groupement :
+    deux dérivations du même objet finissent par ne plus dire la même chose.
+
+    ⚠ `senders` est PASSÉ, pas lu du module : au moment où l'on construit, le modèle global n'est
+    pas encore publié — le lire donnerait celui du cycle PRÉCÉDENT, donc des Receivers en retard
+    d'un tour sur les Senders qu'ils accompagnent."""
+    from . import GROUPHINT_TAG
+    vus = {}
+    for s in (senders or {}).values():
+        for gh in (s.get("tags") or {}).get(GROUPHINT_TAG, []):
+            g = str(gh).split(":", 1)[0]
+            if g and g not in vus:
+                vus[g] = g
+    return sorted(vus.items())
+
+
+def receivers_depuis(senders, device_id, version):
+    """{"receivers": [...], "connection": {...}} — un Receiver de tally par groupe de sortie."""
+    if not actif():
+        return {"receivers": [], "connection": {}}
+    from . import _primary_iface
+    recs, conn = [], {}
+    for groupe, libelle in _groupes_de_sortie(senders):
+        rid = _rid_recv(groupe)
+        recs.append({
+            "id": rid, "version": version,
+            "label": "%s — tally" % libelle,
+            "description": "Receiver d'événements tally (IS-07) du groupe %s" % libelle,
+            "tags": {"urn:x-nmos:tag:grouphint/v1.0": ["%s:tally" % groupe]},
+            "device_id": device_id,
+            "transport": TRANSPORT,
+            "format": "urn:x-nmos:format:data",
+            "interface_bindings": [_primary_iface()],
+            "subscription": {"sender_id": None, "active": False},
+            "caps": {"media_types": ["application/json"],
+                     "event_types": [TYPE_EVENEMENT]},
+        })
+        etat = {
+            "sender_id": None,
+            "master_enable": False,
+            # `connection_uri` nul tant qu'aucun contrôleur n'a patché : c'est LUI qui dit où se
+            # connecter, pas nous.
+            "transport_params": [{"connection_uri": None, "connection_authorization": False,
+                                  "ext_is_07_source_id": None, "ext_is_07_rest_api_url": None}],
+            "activation": {"mode": None, "requested_time": None, "activation_time": None},
+        }
+        conn[rid] = {
+            "constraints": [{"connection_uri": {}, "connection_authorization": {},
+                             "ext_is_07_source_id": {}, "ext_is_07_rest_api_url": {}}],
+            "staged": etat, "active": json.loads(json.dumps(etat)),
+        }
+    return {"receivers": recs, "connection": conn}
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════
 # Events API (REST)
