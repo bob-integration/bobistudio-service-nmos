@@ -101,7 +101,7 @@ def document(conteneur):
             "id": did, "version": version, "label": hostname,
             "description": "Media function %s" % _type(conteneur),
             "tags": {}, "type": "urn:x-nmos:device:generic", "node_id": nid,
-            "senders": [], "receivers": [], "controls": [],
+            "senders": [], "receivers": [], "controls": _controls(conteneur),
         }],
         "sources": [], "flows": [], "senders": [], "receivers": [],
         "connection": {"senders": {}, "receivers": {}},
@@ -154,6 +154,40 @@ def document(conteneur):
             "staged": etat, "active": json.loads(json.dumps(etat)),
         }
     return doc
+
+
+def _controls(conteneur):
+    """Tableau `controls` du Device DU CONTENEUR — c'est par là, et seulement par là, qu'un
+    contrôleur découvre comment piloter cet appareil (IS-12 § « IS-04 interactions »).
+
+    ★ Deux hôtes différents, et c'est légitime : `href` est une URL, rien n'impose qu'elle
+    pointe le même serveur que le Node.
+      · la **Connection API IS-05** du conteneur est servie par son propre agent ;
+      · le **contrôle MS-05-02 (IS-12/IS-14)** vit dans l'ORCHESTRATEUR, où le modèle est déjà
+        implémenté et porte un bloc par conteneur. Embarquer un serveur IS-12 dans l'agent
+        reviendrait à y mettre un protocole à état sur WebSocket, plus `ncp.py` et les modèles
+        AMWA, dans chaque image — sans rien apporter qu'on n'ait déjà.
+    Un Device qui n'annonce AUCUN contrôle se lit « non pilotable ». Le dire de travers serait
+    pire, le taire l'est presque autant."""
+    from . import IS05_VERSION
+    out = []
+    try:
+        from app.metrics import get_container_ip
+        from app.deploy import agent_url
+        ip = get_container_ip(conteneur["vmid"])
+        if ip:
+            out.append({"href": agent_url(ip, "/x-nmos/connection/%s/" % IS05_VERSION),
+                        "type": "urn:x-nmos:control:sr-ctrl/%s" % IS05_VERSION})
+    except Exception as e:
+        log.debug("nmos/plan2: control IS-05 non annoncé (%s)", e)
+    for mod in ("is12", "is14"):
+        try:
+            m = __import__("services.nmos." + mod, fromlist=[mod])
+            if m.actif():
+                out.append({"href": m.href(), "type": m.TYPE_CONTROL})
+        except Exception as e:
+            log.debug("nmos/plan2: control %s non annoncé (%s)", mod, e)
+    return out
 
 
 def _type(c):
