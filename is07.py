@@ -75,16 +75,17 @@ def actif():
 
 
 def _sid(shm, niveau):
-    """Identité d'une Source IS-07. Dérivée du FLUX et du niveau — donc stable tant que le flux
+    """Identité d'une Source IS-07. Dérivée du FLUX et de l'UUID du niveau — donc stable tant que
+    le flux
     porte le même nom, et indépendante de l'index TSL, qui est une adresse de pupitre et peut être
     réattribué par une simple modification de table."""
     from . import _stable_uuid
-    return _stable_uuid("is07:source:%s:%d" % (shm, niveau))
+    return _stable_uuid("is07:source:%s:%s" % (shm, niveau))
 
 
 def _fid(shm, niveau):
     from . import _stable_uuid
-    return _stable_uuid("is07:flow:%s:%d" % (shm, niveau))
+    return _stable_uuid("is07:flow:%s:%s" % (shm, niveau))
 
 
 def _sources():
@@ -93,8 +94,8 @@ def _sources():
         from app.database import (db_get_tsl_mappings_all, db_get_tsl_connections,
                                   db_get_tally_levels)
         mappings = db_get_tsl_mappings_all() or []
-        niveau_de_conn = {c["id"]: c.get("level_id") for c in (db_get_tsl_connections() or [])}
-        nom_de_niveau = {n["id"]: (n.get("nom") or "") for n in (db_get_tally_levels() or [])}
+        niveau_de_conn = {c["id"]: c.get("level_uuid") for c in (db_get_tsl_connections() or [])}
+        nom_de_niveau = {n["uuid"]: (n.get("nom") or "") for n in (db_get_tally_levels() or [])}
     except Exception as e:
         log.warning("nmos/is07 : table de correspondance TSL illisible (%s)", e)
         return []
@@ -112,7 +113,7 @@ def _sources():
         if (shm, niveau) in vus:
             continue
         vus.add((shm, niveau))
-        out.append((shm, idx, niveau, nom_de_niveau.get(niveau) or ("niveau %d" % niveau)))
+        out.append((shm, idx, niveau, nom_de_niveau.get(niveau) or "niveau sans nom"))
     return out
 
 
@@ -136,7 +137,7 @@ def _ts():
 
 def _snd(shm, niveau):
     from . import _stable_uuid
-    return _stable_uuid("is07:sender:%s:%d" % (shm, niveau))
+    return _stable_uuid("is07:sender:%s:%s" % (shm, niveau))
 
 
 def transport_params(sid):
