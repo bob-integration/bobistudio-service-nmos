@@ -2704,9 +2704,24 @@ def _restore_persisted_subscriptions():
 # Client de registration (RDS)
 # ═════════════════════════════════════════════════════════════════════
 
-def _register_one(reg_base, type_str, data):
+def _register_one(reg_base, type_str, data, initial=False):
+    """POST d'une ressource au registre. `initial` = premier POST du Node de ce cycle.
+
+    ★ 201 ≠ 200, ET LA DIFFÉRENCE EST NORMATIVE. IS-04 : un **201** dit « créé », un **200** dit
+    « la ressource existait DÉJÀ ». Sur l'enregistrement INITIAL de notre Node, un 200 signifie
+    qu'un enregistrement précédent traîne au registre — le nôtre après un redémarrage brutal, ou
+    celui d'un homonyme. Le laisser en place, c'est bâtir sur un état qu'on n'a pas écrit : le
+    registre peut porter des Devices, des Senders et des abonnements d'une vie antérieure, que
+    notre cycle de suppression ne connaît pas et ne nettoiera donc jamais.
+    La spec demande de se SUPPRIMER puis de recommencer. On le fait."""
     url = f"{reg_base}/x-nmos/registration/{IS04_VERSION}/resource"
     r = requests.post(url, json={"type": type_str, "data": data}, timeout=5)
+    if initial and type_str == "node" and r.status_code == 200:
+        log.info("nmos: le registre répond 200 à notre premier POST — un enregistrement "
+                 "antérieur subsiste. On se supprime et on recommence (IS-04).")
+        _unregister_node(reg_base)
+        _registre_pousse.pop(reg_base, None)      # notre mémoire du cycle ne vaut plus rien
+        r = requests.post(url, json={"type": type_str, "data": data}, timeout=5)
     if r.status_code not in (200, 201):
         raise RuntimeError(f"register {type_str} {data.get('id')} → HTTP {r.status_code}: {r.text[:200]}")
 
@@ -2726,7 +2741,9 @@ def _register_all(reg_base):
     le font pas, et supprimer un parent en premier laisserait des orphelins chez ceux-là."""
     version = _tai_version()
     node = _build_node_resource(version)
-    _register_one(reg_base, "node", node)
+    # `initial` : premier POST de ce cycle vers ce registre — c'est le seul moment où un 200
+    # signifie « un enregistrement antérieur subsiste » plutôt que « mise à jour ».
+    _register_one(reg_base, "node", node, initial=reg_base not in _registre_pousse)
     with _lock:
         devs    = list(_devices.values())
         srcs    = list(_sources.values())
@@ -2789,9 +2806,55 @@ def _unregister_node(reg_base):
     except Exception:
         pass
 
+ECHECS_AVANT_BASCULE = 2
+_bascule_lock = threading.Lock()
+
+
+def _basculer_registre(mort):
+    """Abandonne le registre `mort` et repart sur un autre, découvert.
+
+    ★ POURQUOI ABANDONNER, ET PAS SEULEMENT RÉESSAYER. La boucle réessayait indéfiniment le MÊME
+    registre, avec un backoff : un registre définitivement tombé nous laissait donc hors de
+    l'installation pour toujours, en réessayant poliment. IS-04 prévoit exactement l'inverse —
+    plusieurs registres sont annoncés avec des priorités, et un Node doit passer au suivant.
+    La suite AMWA le vérifie (« Node never made contact with registry 1 »).
+
+    ⚠ Non bloquant, et dans son propre fil : `start()` appelle `stop()`, qui arrête la boucle
+    d'enregistrement — l'appeler DEPUIS cette boucle serait se couper la branche."""
+    def _go():
+        with _bascule_lock:
+            if _state.get("registry_url") != mort:
+                return                            # quelqu'un a déjà basculé
+            # On efface AVANT de chercher : `stop()` ne doit pas tenter un DELETE poli vers un
+            # registre qui ne répond plus, et la découverte ne doit pas re-choisir celui-ci.
+            _state["registry_url"] = None
+            _state["registered"] = False
+            try:
+                from . import decouverte as _d
+                url, origine = _d.resoudre()
+            except Exception as e:
+                log.warning("nmos: bascule — découverte impossible (%s)", e)
+                url, origine = None, None
+            if url and url != mort:
+                log.warning("nmos: registre %s abandonné après %d échecs — bascule sur %s (%s)",
+                            mort, ECHECS_AVANT_BASCULE, url, origine)
+                try:
+                    from app.database import db_add_alert
+                    db_add_alert("alert.nmos.registre_bascule", "warning", kind="nmos",
+                                 params={"mort": mort, "url": url})
+                except Exception:
+                    pass
+                start(url)
+            else:
+                log.warning("nmos: registre %s abandonné, aucun autre disponible — nous ne "
+                            "sommes plus enregistrés", mort)
+    threading.Thread(target=_go, daemon=True, name="nmos-bascule").start()
+
+
 def _register_loop():
-    """Boucle de registration + heartbeat. Si erreur, retry après backoff."""
+    """Boucle de registration + heartbeat. Si erreur, retry après backoff, puis BASCULE."""
     backoff = 5
+    echecs = 0
     while _running:
         reg = _state.get("registry_url")
         if not reg:
@@ -2803,10 +2866,22 @@ def _register_loop():
             _state["last_register_error"] = None
             log.info(f"nmos: enregistré auprès de {reg}")
             backoff = 5
+            echecs = 0
             # Heartbeat loop
             _dernier_controle = time.monotonic()
+            _prochain = time.monotonic()
             while _running and _state["registry_url"] == reg:
-                time.sleep(HEARTBEAT_S)
+                # ★ CADENCE, PAS SOMMEIL. `sleep(HEARTBEAT_S)` puis un POST donne une période de
+                # HEARTBEAT_S **plus** le temps de la requête : on bat systématiquement en RETARD
+                # sur l'intervalle qu'on annonce, et le registre finit par nous compter comme
+                # défaillant. La suite AMWA le relève (« Heartbeats are not frequent enough »).
+                # On vise donc une échéance, et on garde une marge de 20 % pour la gigue réseau.
+                _prochain += HEARTBEAT_S * 0.8
+                _delta = _prochain - time.monotonic()
+                if _delta > 0:
+                    time.sleep(_delta)
+                else:
+                    _prochain = time.monotonic()      # on a pris du retard : on ne l'accumule pas
                 try:
                     _heartbeat(reg)
                 except Exception as e:
@@ -2841,6 +2916,12 @@ def _register_loop():
             log.warning(f"nmos: registration échouée : {e}")
             _state["registered"] = False
             _state["last_register_error"] = str(e)
+            echecs += 1
+            if echecs >= ECHECS_AVANT_BASCULE:
+                echecs = 0
+                _basculer_registre(reg)
+                time.sleep(2)
+                continue
             time.sleep(backoff)
             backoff = min(backoff * 2, 60)
 
