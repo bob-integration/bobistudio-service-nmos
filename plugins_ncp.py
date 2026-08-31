@@ -59,6 +59,7 @@ CLE_AUTORITE = 0
 CLASSE_PLUGIN = [1, 1, CLE_AUTORITE, 1]        # dérive NcBlock
 CLASSE_PARAMETRE = [1, 2, CLE_AUTORITE, 1]     # dérive NcWorker
 CLASSE_ACTION = [1, 2, CLE_AUTORITE, 2]        # dérive NcWorker
+CLASSE_SCRIPT = [1, 2, CLE_AUTORITE, 3]        # dérive NcWorker
 
 
 def _prop(index, nom, type_nom, lecture_seule=True, nullable=False, description=""):
@@ -117,6 +118,25 @@ DESCRIPTEURS = [
     },
 ]
 
+
+DESCRIPTEURS.append({
+    "description": "Le SCRIPT d'un conteneur Bobi.Studio — démarrable et arrêtable.",
+    "classId": CLASSE_SCRIPT,
+    "name": "NcBobiScript",
+    "fixedRole": "script",
+    "properties": [
+        # `enabled` n'est PAS déclarée ici : elle est HÉRITÉE de NcWorker (2p1), et c'est tout
+        # l'intérêt. NcBlock.enabled est en LECTURE SEULE dans MS-05-02 ; seul NcWorker.enabled
+        # est inscriptible. Le point de contrôle ne pouvait donc pas être le bloc du plugin — il
+        # fallait un Worker dédié, dont c'est la raison d'être.
+        _prop(1, "scriptPath", "NcString", nullable=True,
+              description="Chemin du script déployé, null si le rootfs a été recréé"),
+        _prop(2, "lastExit", "NcInt32", nullable=True,
+              description="Code de sortie de la dernière exécution"),
+    ],
+    "methods": [],
+    "events": [],
+})
 
 DESCRIPTEURS.append({
     "description": "Une action discrète d'un plugin Bobi.Studio (charger, démarrer, rappeler…)",
@@ -391,6 +411,94 @@ class BlocPlugin(ncp.NcBlock):
         })
 
 
+class Script(ncp.NcWorker):
+    """Le script d'un conteneur, vu comme un NcWorker : `enabled` le démarre et l'arrête.
+
+    ★ POURQUOI UN OBJET DÉDIÉ. On aurait voulu poser cela sur le bloc du plugin. MS-05-02 l'interdit :
+    `NcBlock.enabled` est en LECTURE SEULE (« TRUE if block is functional ») ; seul
+    `NcWorker.enabled` est inscriptible. Le contrôle du cycle de vie appartient donc à un Worker.
+
+    ★ LECTURE = CONSTAT, ÉCRITURE = INTENTION. `enabled` se LIT sur l'agent (le script tourne-t-il
+    vraiment ?) et s'ÉCRIT à la fois en base et à l'agent. Les deux ne coïncident pas toujours, et
+    c'est la seule façon de distinguer « arrêté parce qu'on l'a demandé » de « arrêté parce qu'il
+    est tombé ». Rendre l'intention à la place du constat ferait mentir la propriété au moment
+    précis où on a besoin qu'elle dise vrai.
+
+    ⚠ Ce qui n'est PAS fait, et qui est assumé : arrêter le script n'arrête pas le CONTENEUR. Le
+    conteneur reste up, l'agent répond, la production de flux cesse. Piloter le conteneur lui-même
+    demanderait de passer par l'agent-nœud et de décider du sort des ressources réservées — un
+    autre sujet, qu'on ne cache pas derrière la même propriété."""
+
+    class_id = CLASSE_SCRIPT
+
+    def __init__(self, appareil, oid, role, owner, vmid, hostname):
+        super().__init__(appareil, oid, role, owner,
+                         user_label="Script — %s" % (hostname or vmid),
+                         description="Script déployé du conteneur %s" % vmid)
+        self.vmid = vmid
+        self._vals.update({"scriptPath": None, "lastExit": None})
+
+    def _statut(self):
+        """`/status` de l'agent, ou {} s'il ne répond pas."""
+        from app.database import db_get_container
+        from app.deploy import agent_headers, agent_port, agent_session, agent_url
+        c = db_get_container(self.vmid) or {}
+        ip = c.get("ip")
+        if not ip:
+            return {}
+        try:
+            r = agent_session().get(agent_url(ip, "/status", port=agent_port(self.vmid)),
+                                    timeout=3, headers=agent_headers(self.vmid))
+            return (r.json() or {}) if r.status_code == 200 else {}
+        except Exception:
+            return {}
+
+    def _lire(self, nom):
+        if nom not in ("enabled", "scriptPath", "lastExit"):
+            return super()._lire(nom)
+        st = self._statut()
+        if not st:
+            # L'agent ne répond pas : on ne SAIT pas. On rend l'intention plutôt qu'un `false` qui
+            # ferait croire à un arrêt volontaire — et `scriptPath` reste null, ce qui dit au
+            # contrôleur que le constat manque.
+            if nom == "enabled":
+                from app.database import db_script_enabled
+                return db_script_enabled(self.vmid)
+            return None
+        if nom == "enabled":
+            return bool(st.get("running"))
+        if nom == "scriptPath":
+            return st.get("path")
+        return st.get("last_exit")
+
+    def _ecrire(self, nom, valeur):
+        if nom != "enabled":
+            return super()._ecrire(nom, valeur)
+        from app.database import db_get_container, db_set_script_enabled
+        from app.deploy import agent_headers, agent_port, agent_session, agent_url
+        voulu = bool(valeur)
+        c = db_get_container(self.vmid) or {}
+        ip = c.get("ip")
+        if not ip:
+            return ncp.erreur(ncp.DEVICE_ERROR, "conteneur %s sans IP" % self.vmid)
+        # L'INTENTION D'ABORD. Si l'appel à l'agent échoue, l'intention reste posée et le prochain
+        # déploiement la respectera : mieux vaut une consigne enregistrée pas encore appliquée
+        # qu'une consigne appliquée que rien ne mémorise.
+        db_set_script_enabled(self.vmid, voulu)
+        try:
+            r = agent_session().post(agent_url(ip, "/start" if voulu else "/stop",
+                                               port=agent_port(self.vmid)),
+                                     timeout=6, headers=agent_headers(self.vmid))
+        except Exception as e:
+            return ncp.erreur(ncp.DEVICE_ERROR, "agent injoignable : %s" % str(e)[:80])
+        if r.status_code != 200:
+            return ncp.erreur(ncp.DEVICE_ERROR, "agent a répondu %s" % r.status_code)
+        self.notifier("enabled", voulu)
+        log.info("MS-05-02 : script du conteneur %s %s par un contrôleur NMOS",
+                 self.vmid, "démarré" if voulu else "ARRÊTÉ")
+        return ncp.ok()
+
+
 # ══════════════════════════════════════════════════════════════════════════════════════════════
 # Synchronisation avec le parc
 # ══════════════════════════════════════════════════════════════════════════════════════════════
@@ -398,6 +506,7 @@ class BlocPlugin(ncp.NcBlock):
 _blocs = {}          # vmid → BlocPlugin
 _params = {}         # (vmid, role) → Parametre
 _actions = {}        # (vmid, role) → Action
+_scripts = {}        # vmid → Script
 
 
 def actif():
@@ -449,6 +558,7 @@ def sync(appareil, bloc_parent):
             appareil.retirer(bloc_parent, _blocs.pop(vmid))
         _params.clear()
         _actions.clear()
+        _scripts.clear()
         return
 
     voulus = {c["vmid"]: (c, t) for c, t in _conteneurs_pilotables()}
@@ -459,6 +569,7 @@ def sync(appareil, bloc_parent):
             _params.pop(cle, None)
         for cle in [k for k in _actions if k[0] == vmid]:
             _actions.pop(cle, None)
+        _scripts.pop(vmid, None)
 
     for vmid, (c, t) in voulus.items():
         bloc = _blocs.get(vmid)
@@ -500,8 +611,17 @@ def sync(appareil, bloc_parent):
             appareil.ajouter(bloc, obj)
             _actions[(vmid, role)] = obj
 
-    log.info("MS-05-02 : %d plugin(s) pilotable(s), %d paramètre(s) et %d action(s) publiés",
-             len(_blocs), len(_params), len(_actions))
+        # ── Le script, en NcWorker ────────────────────────────────────────────────────────
+        # Rôle FIXE « script » (fixedRole du descripteur) : un contrôleur doit pouvoir l'atteindre
+        # par chemin sans deviner un nom, et il n'y en a qu'un par plugin.
+        if vmid not in _scripts:
+            sc = Script(appareil, appareil.oid_libre(), "script", bloc.oid, vmid,
+                        c.get("hostname"))
+            appareil.ajouter(bloc, sc)
+            _scripts[vmid] = sc
+
+    log.info("MS-05-02 : %d plugin(s) pilotable(s), %d paramètre(s), %d action(s) et "
+             "%d script(s) publiés", len(_blocs), len(_params), len(_actions), len(_scripts))
 
 
 def etat():
