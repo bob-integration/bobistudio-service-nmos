@@ -283,6 +283,8 @@ def enregistrer(bp):
 
     @bp.route(BASE_REG + "/resource/<pluriel>/<rid>", methods=["GET"])
     def reg_lire(pluriel, rid):
+        if not actif():
+            return _hors_service()
         type_ = _SINGULIER.get(pluriel)
         with _verrou:
             r = _res.get(type_, {}).get(rid) if type_ else None
@@ -320,6 +322,12 @@ def enregistrer(bp):
         return jsonify([_PLURIEL[t] + "/" for t in TYPES] + ["subscriptions/"])
 
     def _collection(type_):
+        # ⚠ La LECTURE aussi est fermée avec le registre. Un premier jet ne gardait que les
+        # endpoints d'écriture : la Query API répondait 200 (avec des listes vides, faute
+        # d'enregistrement possible) alors que l'exploitant croyait la surface fermée. Un service
+        # « ouvert mais vide » est indiscernable d'un service ouvert et cassé — 501 dit la vérité.
+        if not actif():
+            return _hors_service()
         # Filtres RQL basiques de la Query API : `?label=…`, `?id=…`. Le sous-ensemble suffit aux
         # contrôleurs courants ; ce qu'on ne sait pas filtrer est IGNORÉ, jamais appliqué de
         # travers — un filtre mal compris qui rend trop peu est indétectable côté client.
@@ -340,6 +348,8 @@ def enregistrer(bp):
 
         def _faire_un(t):
             def _un(rid):
+                if not actif():
+                    return _hors_service()
                 with _verrou:
                     r = _res[t].get(rid)
                 if not r:
@@ -355,6 +365,8 @@ def enregistrer(bp):
 
     @bp.route(BASE_QRY + "/subscriptions", methods=["GET"])
     def qry_subscriptions():
+        if not actif():
+            return _hors_service()
         # Les abonnements WebSocket de la Query API ne sont pas implémentés. On rend une liste
         # VIDE (un contrôleur retombe alors sur l'interrogation périodique) plutôt qu'un 501 qui
         # ferait échouer sa découverte entière pour une capacité optionnelle.
