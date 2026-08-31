@@ -26,12 +26,24 @@ API (zero being the highest priority). Values 100+ are reserved for development 
 colliding with a live system. » S'enregistrer dans un registre de développement, c'est disparaître
 de l'installation réelle sans qu'aucune erreur ne soit levée.
 
-═══ Ce que ça ne fait PAS ════════════════════════════════════════════════════════════════════
+═══ ÉCOUTER, PAS SONDER ══════════════════════════════════════════════════════════════════════
 
-Pas de bascule instantanée : la boucle réévalue à intervalle, elle ne surveille pas le registre en
-temps réel. Un registre qui tombe est remplacé au tour suivant, pas à la seconde. C'est assumé —
-un mécanisme de bascule nerveux ferait plus de dégâts qu'une reprise tranquille, et nous avons
-déjà payé cher une reconnexion sans palier sur ce produit.
+Première version : un `Zeroconf()` neuf toutes les N secondes, une écoute de 4 s, puis fermeture.
+Ça ne marche pas, et la suite AMWA l'a montré — nous détections bien la mort d'un registre, nous
+l'abandonnions correctement, et nous ne trouvions **jamais** son remplaçant. Deux raisons :
+
+  · une annonce qui apparaît ENTRE deux sondages est simplement manquée ;
+  · chaque sondage repart d'un cache mDNS FROID et dépend de la réponse de l'annonceur dans la
+    fenêtre. Un service qui a déjà fait son annonce spontanée peut ne pas se re-signaler à temps.
+
+D'où un `ServiceBrowser` PERMANENT, vivant pour la durée du processus, qui tient à jour la carte
+des registres annoncés. La réaction devient ÉVÉNEMENTIELLE : une annonce qui apparaît nous réveille,
+une annonce qui disparaît aussi. Il n'y a plus de cadence d'acquisition à arbitrer — le dilemme
+« chercher souvent / ne pas basculer nerveusement » se dissout, parce que ce ne sont plus les mêmes
+mécanismes : on ÉCOUTE en permanence, et on ne BASCULE que sur un événement réel.
+
+La boucle périodique subsiste, réduite à ce qu'elle sait faire : vérifier que le registre courant
+répond encore (une annonce mDNS peut survivre à un service mort).
 """
 
 import logging
@@ -107,79 +119,170 @@ def _nos_adresses():
 # Découverte
 # ══════════════════════════════════════════════════════════════════════════════════════════════
 
-def decouvrir(duree_s=DUREE_BROWSE_S):
-    """[{nom, url, pri, ip, port}] des Registration API annoncées, triées par priorité croissante.
+# Carte VIVANTE des registres annoncés : nom de service → {ip, port, pri, url}. Tenue à jour par
+# l'écouteur, jamais reconstruite — c'est tout l'intérêt.
+_annonces = {}
+_annonces_lock = threading.Lock()
+_zc = None
+_browser = None
 
-    Écarte `pri` ≥ 100 et nos propres annonces. Liste vide si zeroconf est absent : on ne devine
-    pas un registre, on constate qu'on n'en a pas trouvé."""
+
+def _retenir(name, info):
+    """Range une annonce dans la carte, ou l'écarte en DISANT pourquoi."""
+    from . import IS04_VERSION
+    if not info or not info.addresses:
+        return
+    txt = {(k.decode() if isinstance(k, bytes) else k):
+           ((v or b"").decode() if isinstance(v, bytes) else v)
+           for k, v in (info.properties or {}).items()}
+    try:
+        pri = int(txt.get("pri", PRI_DEVELOPPEMENT))
+    except (TypeError, ValueError):
+        pri = PRI_DEVELOPPEMENT
+    ip, port = socket.inet_ntoa(info.addresses[0]), int(info.port or 0)
+    if ip in _nos_adresses() and port == NOTRE_PORT:
+        log.debug("nmos/découverte : %s:%d ignoré, c'est NOTRE registre", ip, port)
+        return
+    if pri >= PRI_DEVELOPPEMENT:
+        log.info("nmos/découverte : registre %s:%d écarté — pri=%d, réservé au développement "
+                 "par IS-04", ip, port, pri)
+        return
+    ver = txt.get("api_ver", "")
+    if ver and IS04_VERSION not in [v.strip() for v in ver.split(",")]:
+        log.info("nmos/découverte : registre %s:%d écarté — annonce api_ver=%r, nous parlons %s",
+                 ip, port, ver, IS04_VERSION)
+        return
+    proto = txt.get("api_proto", "http")
+    with _annonces_lock:
+        nouveau = name not in _annonces
+        _annonces[name] = {"nom": name.split(".")[0], "ip": ip, "port": port, "pri": pri,
+                           "url": "%s://%s:%d" % (proto, ip, port)}
+    if nouveau:
+        log.info("nmos/découverte : registre annoncé — %s://%s:%d (pri=%d)", proto, ip, port, pri)
+        _reveiller()
+
+
+class _Ecouteur:
+    """Écouteur mDNS permanent. Les trois méthodes sont le contrat de zeroconf."""
+
+    def add_service(self, zc, type_, name):
+        try:
+            _retenir(name, zc.get_service_info(type_, name, timeout=3000))
+        except Exception as e:
+            log.debug("nmos/découverte : annonce %s illisible (%s)", name, e)
+
+    def update_service(self, zc, type_, name):
+        self.add_service(zc, type_, name)
+
+    def remove_service(self, zc, type_, name):
+        with _annonces_lock:
+            parti = _annonces.pop(name, None)
+        if not parti:
+            return
+        log.info("nmos/découverte : registre RETIRÉ du réseau — %s", parti["url"])
+        # ★ C'est l'événement qui compte. Un registre qui retire son annonce s'en va : ne pas
+        # réagir ici, c'est rester accroché à un mort jusqu'au prochain échec de battement.
+        from . import _state
+        if _state.get("registry_url") == parti["url"]:
+            _reveiller(bascule_depuis=parti["url"])
+
+
+def _reveiller(bascule_depuis=None):
+    """Réévalue MAINTENANT, sans attendre le tour de boucle. Toujours dans un fil : `start()`
+    arrête la boucle d'enregistrement, et un écouteur zeroconf ne doit jamais bloquer."""
+    def _go():
+        try:
+            from . import _state, start
+            actuel = _state.get("registry_url")
+            if bascule_depuis and actuel and actuel != bascule_depuis:
+                return                            # quelqu'un a déjà bougé
+            if actuel and not bascule_depuis:
+                return                            # on en a un qui va bien : on ne touche à rien
+            url, origine = resoudre()
+            if url and url != actuel:
+                log.info("nmos/découverte : registre retenu %s (%s)", url, origine)
+                start(url)
+        except Exception as e:
+            log.warning("nmos/découverte : réveil sans effet (%s)", e)
+    threading.Thread(target=_go, daemon=True, name="nmos-decouverte-reveil").start()
+
+
+def _demarrer_ecoute():
+    """Ouvre l'écouteur permanent. Idempotent."""
+    global _zc, _browser
+    if _browser is not None:
+        return True
     try:
         from zeroconf import ServiceBrowser, Zeroconf
     except Exception as e:
         log.info("nmos/découverte : zeroconf indisponible (%s)", e)
+        return False
+    _zc = Zeroconf()
+    _browser = ServiceBrowser(_zc, "_%s._tcp.local." % TYPE_DNSSD, _Ecouteur())
+    log.info("nmos/découverte : écoute mDNS permanente de _%s._tcp", TYPE_DNSSD)
+    return True
+
+
+def _arreter_ecoute():
+    global _zc, _browser
+    try:
+        if _browser is not None:
+            _browser.cancel()
+    except Exception:
+        pass
+    try:
+        if _zc is not None:
+            _zc.close()
+    except Exception:
+        pass
+    _browser = _zc = None
+
+
+def decouvrir(duree_s=DUREE_BROWSE_S):
+    """[{nom, url, pri, ip, port}] des registres CONNUS, triés par priorité croissante.
+
+    Lit la carte tenue par l'écouteur — ce n'est plus un sondage. `duree_s` ne sert qu'au premier
+    appel, quand l'écoute vient d'être ouverte et que les annonces n'ont pas encore afflué."""
+    _demarrer_ecoute()
+    with _annonces_lock:
+        out = list(_annonces.values())
+    if not out and duree_s:
+        # ⚠ REPLI PAR SONDAGE, et il n'est pas décoratif. MESURÉ le 2026-08-31 : un `Zeroconf`
+        # permanent, dans le processus serveur, ne recevait AUCUNE annonce venue d'un autre
+        # processus — pendant qu'un `Zeroconf` neuf et éphémère, lui, les recevait. La cause
+        # n'est pas élucidée (socket multicast tenue trop tôt ? interaction avec l'annonceur ?),
+        # et tant qu'elle ne l'est pas, s'en remettre au seul écouteur permanent serait parier
+        # sur un mécanisme qu'on a vu échouer en conditions réelles.
+        #
+        # Les deux chemins ne font donc pas double emploi : l'écouteur donne la RÉACTIVITÉ
+        # (une annonce qui apparaît nous réveille), le sondage donne la CERTITUDE au moment où
+        # l'on en a besoin — c'est-à-dire quand on n'a rien.
+        out = _sonder(duree_s)
+    return sorted(out, key=lambda t: (t["pri"], t["ip"]))
+
+
+def _sonder(duree_s):
+    """Sondage PONCTUEL : un `Zeroconf` neuf, une écoute bornée, puis fermeture.
+
+    Alimente la même carte que l'écouteur permanent — les deux chemins ne divergent donc jamais
+    sur ce qu'ils retiennent ni sur ce qu'ils écartent."""
+    try:
+        from zeroconf import ServiceBrowser, Zeroconf
+    except Exception:
         return []
-
-    nôtres = _nos_adresses()
-    trouves, vus = [], set()
-
-    class _L:
-        def add_service(self, zc, type_, name):
-            try:
-                i = zc.get_service_info(type_, name, timeout=3000)
-            except Exception:
-                return
-            if not i or not i.addresses:
-                return
-            txt = {(k.decode() if isinstance(k, bytes) else k):
-                   ((v or b"").decode() if isinstance(v, bytes) else v)
-                   for k, v in (i.properties or {}).items()}
-            try:
-                pri = int(txt.get("pri", PRI_DEVELOPPEMENT))
-            except (TypeError, ValueError):
-                pri = PRI_DEVELOPPEMENT
-            ip = socket.inet_ntoa(i.addresses[0])
-            port = int(i.port or 0)
-            if (ip, port) in vus:
-                return
-            vus.add((ip, port))
-            if ip in nôtres and port == NOTRE_PORT:
-                log.debug("nmos/découverte : %s:%d ignoré, c'est NOTRE registre", ip, port)
-                return
-            if pri >= PRI_DEVELOPPEMENT:
-                log.info("nmos/découverte : registre %s:%d écarté — pri=%d, réservé au "
-                         "développement par IS-04", ip, port, pri)
-                return
-            proto = txt.get("api_proto", "http")
-            ver = txt.get("api_ver", "")
-            from . import IS04_VERSION
-            if ver and IS04_VERSION not in [v.strip() for v in ver.split(",")]:
-                log.info("nmos/découverte : registre %s:%d écarté — annonce api_ver=%r, nous "
-                         "parlons %s", ip, port, ver, IS04_VERSION)
-                return
-            # ⚠ `url` est l'ORIGINE NUE, pas l'URL de l'API. C'est ce qu'attend `start()` →
-            # `_register_all(reg_base)`, qui construit lui-même
-            # `{base}/x-nmos/registration/{ver}/resource`. Rendre l'URL complète ici produisait un
-            # chemin DOUBLÉ (`…/x-nmos/registration/v1.3/x-nmos/registration/v1.3/resource`) et un
-            # 404 à chaque POST — mesuré le 2026-08-31, et invisible sans regarder le registre d'en
-            # face : de notre côté, seule une alerte d'échec d'enregistrement remontait.
-            trouves.append({"nom": name.split(".")[0], "ip": ip, "port": port, "pri": pri,
-                            "url": "%s://%s:%d" % (proto, ip, port)})
-
-        def update_service(self, *a):
-            pass
-
-        def remove_service(self, *a):
-            pass
-
     zc = Zeroconf()
     try:
-        ServiceBrowser(zc, "_%s._tcp.local." % TYPE_DNSSD, _L())
+        ServiceBrowser(zc, "_%s._tcp.local." % TYPE_DNSSD, _Ecouteur())
         time.sleep(duree_s)
+    except Exception as e:
+        log.warning("nmos/découverte : sondage échoué (%s)", e)
     finally:
         try:
             zc.close()
         except Exception:
             pass
-    return sorted(trouves, key=lambda t: (t["pri"], t["ip"]))
+    with _annonces_lock:
+        return list(_annonces.values())
 
 
 def joignable(base):
@@ -233,6 +336,8 @@ def _boucle():
                 from . import _state, start
                 actuel = _state.get("registry_url")
                 if not actuel or not joignable(actuel):
+                    # `resoudre()` → `decouvrir()` → sondage si la carte est vide : c'est ici que
+                    # le repli reprend la main quand l'écouteur permanent reste muet.
                     url, origine = resoudre()
                     if url and url != actuel:
                         log.info("nmos/découverte : registre retenu %s (%s)", url, origine)
@@ -251,7 +356,10 @@ def _boucle():
                         _courant.update({"url": None, "origine": None})
         except Exception as e:
             log.warning("nmos/découverte : tour ignoré (%s)", e)
-        # Cadence choisie sur l'ÉTAT, pas sur une constante : sans registre on cherche vite.
+        # ⚠ Cette boucle n'est PLUS le moyen de découvrir : les annonces arrivent par l'écouteur.
+        # Elle ne sert qu'à un cas que mDNS ne signale pas — un registre dont l'annonce est
+        # toujours là mais dont le service ne répond plus. On garde donc les deux cadences : vite
+        # tant qu'on n'a pas de registre, lentement quand on en a un qui va bien.
         try:
             from . import _state as _s
             attente = PERIODE_S if _s.get("registry_url") else PERIODE_ACQUISITION_S
@@ -264,15 +372,21 @@ def _boucle():
 
 
 def demarrer():
+    """Ouvre l'écoute mDNS permanente et la boucle de surveillance."""
     global _thread, _running
     if _running:
         return
     _running = True
+    if actif():
+        _demarrer_ecoute()
+        _reveiller()                 # une annonce peut déjà être là : on ne l'attend pas
     _thread = threading.Thread(target=_boucle, daemon=True, name="nmos-decouverte")
     _thread.start()
-    log.info("nmos/découverte : boucle démarrée (actif=%s, période %ds)", actif(), int(PERIODE_S))
+    log.info("nmos/découverte : démarrée (actif=%s, surveillance toutes les %ds ; les annonces "
+             "sont ÉCOUTÉES en continu, pas sondées)", actif(), int(PERIODE_S))
 
 
 def arreter():
     global _running
     _running = False
+    _arreter_ecoute()
