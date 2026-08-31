@@ -292,6 +292,97 @@
     </div>
 </div>
 
+
+<!-- ══════════════════════════════════════════════════════════════════════════════════════════
+     SURFACES NMOS AVANCÉES
+     Chaque bascule ouvre une surface visible de l'EXTÉRIEUR. Le libellé dit ce qu'elle fait ;
+     la ligne `meta` en dessous dit ce qu'elle COÛTE ou ce qu'elle engage — c'est cette seconde
+     phrase qui manque d'habitude, et sans laquelle un exploitant coche sans savoir.
+     Toutes sont fermées par défaut sauf la surface MXL.
+     ══════════════════════════════════════════════════════════════════════════════════════════ -->
+<div class="card" style="margin-top:var(--space-4)">
+    <h2>{{ _('service.nmos.surfaces_avancees') }}</h2>
+    <div class="card-body">
+
+        <h4>{{ _('service.nmos.surface_mxl_bcp_007_03') }}</h4>
+        <div class="row">
+            <div class="field"><label>
+                <input type="checkbox" class="ios-toggle" id="s_nmos_mxl" onchange="appliquerNmosAvance()">
+                {{ _('service.nmos.publier_le_bus_mxl_en_nmos') }}
+            </label></div>
+            <div class="field"><label>
+                <input type="checkbox" class="ios-toggle" id="s_nmos_mxl_ecriture" onchange="appliquerNmosAvance()">
+                {{ _('service.nmos.autoriser_l_ecriture_is_05_sur_le_mxl') }}
+            </label></div>
+        </div>
+        <div class="meta">{{ _('service.nmos.meta_mxl')|safe }}</div>
+
+        <h4 style="margin-top:var(--space-3)">{{ _('service.nmos.registre_is_04_embarque') }}</h4>
+        <div class="row" style="align-items:flex-end">
+            <div class="field" style="align-self:center"><label>
+                <input type="checkbox" class="ios-toggle" id="s_nmos_registre" onchange="appliquerNmosAvance()">
+                {{ _('service.nmos.heberger_un_registre') }}
+            </label></div>
+            <div class="field"><label>{{ _('service.nmos.ramasse_miettes_s') }}</label>
+                <input type="number" id="s_nmos_registre_gc_s" class="num-stepper" min="4" max="120" value="12"
+                       onchange="appliquerNmosAvance()"></div>
+            <div class="field"><label>{{ _('service.nmos.priorite_dns_sd') }}</label>
+                <input type="number" id="s_nmos_registre_pri" class="num-stepper" min="0" max="255" value="100"
+                       onchange="appliquerNmosAvance()"></div>
+        </div>
+        <div class="meta">{{ _('service.nmos.meta_registre')|safe }}</div>
+
+        <h4 style="margin-top:var(--space-3)">{{ _('service.nmos.conteneurs_et_plugins') }}</h4>
+        <div class="row">
+            <div class="field"><label>
+                <input type="checkbox" class="ios-toggle" id="s_nmos_conteneur_node" onchange="appliquerNmosAvance()">
+                {{ _('service.nmos.chaque_conteneur_sert_son_node') }}
+            </label></div>
+            <div class="field"><label>
+                <input type="checkbox" class="ios-toggle" id="s_nmos_plugins_ncp" onchange="appliquerNmosAvance()">
+                {{ _('service.nmos.publier_les_parametres_de_plugin') }}
+            </label></div>
+            <div class="field"><label>
+                <input type="checkbox" class="ios-toggle" id="s_nmos_supervision_tiers" onchange="appliquerNmosAvance()">
+                {{ _('service.nmos.superviser_les_appareils_tiers') }}
+            </label></div>
+        </div>
+        <div class="meta">{{ _('service.nmos.meta_conteneurs')|safe }}</div>
+
+        <h4 style="margin-top:var(--space-3)">{{ _('service.nmos.tally_is_07') }}</h4>
+        <div class="row" style="align-items:flex-end">
+            <div class="field" style="align-self:center"><label>
+                <input type="checkbox" class="ios-toggle" id="s_nmos_is07" onchange="appliquerNmosAvance()">
+                {{ _('service.nmos.publier_le_tally_en_is_07') }}
+            </label></div>
+            <div class="field" style="align-self:center"><label>
+                <input type="checkbox" class="ios-toggle" id="s_nmos_is07_ws" onchange="appliquerNmosAvance()">
+                {{ _('service.nmos.transport_websocket') }}
+            </label></div>
+            <div class="field"><label>{{ _('service.nmos.port_websocket') }}</label>
+                <input type="number" id="s_nmos_is07_port" class="num-stepper" min="1" max="65535" value="5011"
+                       onchange="appliquerNmosAvance()"></div>
+        </div>
+        <div class="meta">{{ _('service.nmos.meta_is07')|safe }}</div>
+
+        <h4 style="margin-top:var(--space-3)">{{ _('service.nmos.parametres_systeme_is_09') }}</h4>
+        <div class="row" style="align-items:flex-end">
+            <div class="field" style="align-self:center"><label>
+                <input type="checkbox" class="ios-toggle" id="s_nmos_is09" onchange="appliquerNmosAvance()">
+                {{ _('service.nmos.publier_les_parametres_systeme') }}
+            </label></div>
+            <div class="field"><label>{{ _('service.nmos.priorite_dns_sd') }}</label>
+                <input type="number" id="s_nmos_is09_pri" class="num-stepper" min="0" max="255" value="100"
+                       onchange="appliquerNmosAvance()"></div>
+            <div class="field" style="flex:1; min-width:280px"><label>{{ _('service.nmos.domaine_ptp_publie') }}</label>
+                <div id="nmos_is09_domaine" class="meta" style="font-family:var(--font-mono)">—</div></div>
+        </div>
+        <div class="meta">{{ _('service.nmos.meta_is09')|safe }}</div>
+
+        <div class="meta" style="margin-top:var(--space-3)">{{ _('service.nmos.meta_redemarrage')|safe }}</div>
+    </div>
+</div>
+
 <script>
 // ─── Supervision IS-12 / BCP-008 ──────────────────────────────────────────────────────────────
 // Cette table affiche EXACTEMENT ce que le service publie aux contrôleurs tiers (même source :
@@ -410,6 +501,67 @@
             }).join('') : '<tr><td colspan="8" class="meta">Aucun moniteur.</td></tr>';
         } catch (e) { console.error('is12:', e); }
     };
+
+
+    // ── Surfaces avancées ────────────────────────────────────────────────────────────────────
+    // Écriture par la route GÉNÉRIQUE /api/settings : ces clés sont déclarées dans
+    // `settings_keys` du manifeste, donc `update_bulk` les accepte déjà. Pas de route dédiée à
+    // ajouter — et `ignored` nous dirait si l'une d'elles n'était pas reconnue, plutôt que de
+    // la jeter en silence.
+    const _AVANCES_BOOL = ['nmos_mxl', 'nmos_mxl_ecriture', 'nmos_registre', 'nmos_conteneur_node',
+                           'nmos_plugins_ncp', 'nmos_supervision_tiers', 'nmos_is07',
+                           'nmos_is07_ws', 'nmos_is09'];
+    const _AVANCES_NUM = ['nmos_registre_gc_s', 'nmos_registre_pri', 'nmos_is07_port',
+                          'nmos_is09_pri'];
+
+    window.appliquerNmosAvance = async function () {
+        const payload = {};
+        _AVANCES_BOOL.forEach(k => {
+            const el = document.getElementById('s_' + k);
+            if (el) payload[k] = el.checked;
+        });
+        _AVANCES_NUM.forEach(k => {
+            const el = document.getElementById('s_' + k);
+            if (el && el.value !== '') payload[k] = parseInt(el.value, 10);
+        });
+        const r = await fetch('/api/settings', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)});
+        const s = await r.json().catch(() => ({}));
+        if (!r.ok) { mxlToast(_tnmos('service.nmos.js.avance_erreur'), 'error'); return; }
+        // Une clé ignorée voudrait dire qu'elle n'est pas déclarée au manifeste : le taire ferait
+        // croire à un réglage enregistré qui ne changerait rien.
+        if ((s.ignored || []).length) {
+            mxlToast(_tnmos('service.nmos.js.avance_ignore').replace('{k}', s.ignored.join(', ')),
+                     'error');
+        } else {
+            mxlToast(_tnmos('service.nmos.js.avance_ok'), 'ok');
+        }
+        chargerNmosAvance();
+    };
+
+    window.chargerNmosAvance = async function () {
+        try {
+            const r = await fetch('/api/settings');
+            const s = await r.json();
+            const vrai = v => v === true || v === 1 || v === '1' ||
+                              String(v).toLowerCase() === 'true';
+            _AVANCES_BOOL.forEach(k => {
+                const el = document.getElementById('s_' + k);
+                if (el && document.activeElement !== el) el.checked = vrai(s[k]);
+            });
+            _AVANCES_NUM.forEach(k => {
+                const el = document.getElementById('s_' + k);
+                if (el && document.activeElement !== el && s[k] !== undefined && s[k] !== null) {
+                    el.value = s[k];
+                }
+            });
+            const d = document.getElementById('nmos_is09_domaine');
+            if (d) d.textContent = (s.ptp_domain !== undefined && s.ptp_domain !== null)
+                                   ? String(s.ptp_domain) : '—';
+        } catch (e) { console.error('nmos avancé:', e); }
+    };
+    chargerNmosAvance();
 
     setInterval(function () {
         const tab = document.getElementById('protocoles-tab-nmos');
