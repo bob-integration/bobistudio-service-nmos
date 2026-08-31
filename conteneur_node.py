@@ -162,7 +162,81 @@ def document(conteneur):
                              "mxl_flow_id": {}}],
             "staged": etat, "active": json.loads(json.dumps(etat)),
         }
+
+    _ajouter_receivers_evenements(doc, conteneur, iu, did, vmid, hostname, version)
     return doc
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# Receivers d'ÉVÉNEMENTS (IS-07) — le tally entrant
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# ★ CE QUE ÇA CHANGE. Nos plugins savent afficher un tally, mais seulement le NÔTRE : il leur
+# arrive par un POST propriétaire depuis le distributeur TSL. Un mélangeur tiers qui émet de
+# l'IS-07 ne peut donc rien piloter chez nous sans qu'on écrive un pont, comme on l'a fait pour
+# l'ATEM et pour TSL. Déclarer un Receiver IS-07, c'est rendre nos murs CONNECTABLES par IS-05,
+# depuis n'importe quel contrôleur, sans une ligne de pont.
+#
+# ★ QUI TIENT LA SOCKET, ET POURQUOI CE N'EST PAS LE CONTENEUR. Le Receiver est déclaré ici, mais
+# la connexion WebSocket est établie par l'ORCHESTRATEUR à l'activation IS-05, et les événements
+# rejoignent le chemin de distribution qui existe déjà. C'est le même motif que MXL : la ressource
+# est DÉCRITE en NMOS, le transport réel est autre chose. Deux raisons, dans cet ordre :
+#   · une socket par SOURCE CONNECTÉE plutôt qu'une par conteneur — et un seul endroit où se
+#     tromper sur le palier de reconnexion, plutôt qu'un par plugin ;
+#   · le contrôleur ne peut pas faire la différence : il patche un Receiver, le Receiver reçoit.
+# Limite assumée, et il faut la dire : si l'orchestrateur tombe, le tally s'arrête. C'est déjà le
+# cas aujourd'hui — on ne dégrade rien, on ne répare rien non plus.
+
+EVT_TALLY = "tally"
+
+
+def _evenements_consommes(conteneur):
+    """Types d'événements déclarés consommés par le plugin (`events.consumes` du manifeste).
+
+    DÉCLARATIF à dessein. Le tally ne vivait que dans les `config_schema` des plugins : aucun code
+    ne pouvait savoir qu'un plugin en consomme sans deviner sur des noms de clés — et une devinette
+    qui se trompe ici publierait un Receiver que rien n'alimente."""
+    from app import plugins as _plg
+    m = _plg.REGISTRY.get(_type(conteneur)) or {}
+    return [str(x) for x in ((m.get("events") or {}).get("consumes") or [])]
+
+
+def _ajouter_receivers_evenements(doc, conteneur, iu, did, vmid, hostname, version):
+    from . import is07
+    if EVT_TALLY not in _evenements_consommes(conteneur):
+        return
+    rid = _rid("receiver", iu, "events", EVT_TALLY)
+    doc["receivers"].append({
+        "id": rid, "version": version,
+        "label": "%s — tally" % hostname,
+        "description": "Receiver d'événements tally (IS-07)",
+        "tags": {"urn:x-mxl:vmid": [str(vmid)], "urn:x-nmos:tag:grouphint/v1.0":
+                 ["%s In:tally" % hostname]},
+        "device_id": did,
+        "transport": is07.TRANSPORT,
+        "format": "urn:x-nmos:format:data",
+        # `interface_bindings` VIDE, cohérent avec un Node qui ne déclare aucune interface (cf.
+        # le Node ci-dessus, BCP-007-03). Lier ce Receiver à une NIC du conteneur affirmerait
+        # qu'il y ouvre lui-même une connexion — ce qu'il ne fait pas.
+        "interface_bindings": [],
+        "subscription": {"sender_id": None, "active": False},
+        "caps": {"media_types": ["application/json"],
+                 "event_types": [is07.TYPE_EVENEMENT]},
+    })
+    doc["devices"][0]["receivers"].append(rid)
+    etat = {
+        "sender_id": None,
+        "master_enable": False,
+        # IS-07 § Transport - Websocket. `connection_uri` est nul tant qu'aucun contrôleur n'a
+        # patché : c'est LUI qui dit où se connecter, pas nous.
+        "transport_params": [{"connection_uri": None, "connection_authorization": False,
+                              "ext_is_07_source_id": None, "ext_is_07_rest_api_url": None}],
+        "activation": {"mode": None, "requested_time": None, "activation_time": None},
+    }
+    doc["connection"]["receivers"][rid] = {
+        "constraints": [{"connection_uri": {}, "connection_authorization": {},
+                         "ext_is_07_source_id": {}, "ext_is_07_rest_api_url": {}}],
+        "staged": etat, "active": json.loads(json.dumps(etat)),
+    }
 
 
 def _controls(conteneur):
