@@ -1,4 +1,7 @@
 {
+  "alert.nmos.registre_bascule": "Registre NMOS {mort} injoignable — bascule sur {url}",
+  "alert.nmos.registre_decouvert": "Registre NMOS découvert sur le réseau : {url}",
+  "alert.nmos.registre_perdu": "Registre NMOS {url} injoignable, et aucun autre annoncé sur le réseau",
   "service.nmos.0_selectionne": "0 sélectionné",
   "service.nmos.abonne": "Abonné",
   "service.nmos.activation_is_05_auto_des_senders_distan": "Activation IS-05 auto des senders distants",

@@ -1,4 +1,7 @@
 {
+  "alert.nmos.registre_bascule": "NMOS registry {mort} unreachable — failing over to {url}",
+  "alert.nmos.registre_decouvert": "NMOS registry discovered on the network: {url}",
+  "alert.nmos.registre_perdu": "NMOS registry {url} unreachable, and no other announced on the network",
   "service.nmos.0_selectionne": "0 selected",
   "service.nmos.abonne": "Subscribed",
   "service.nmos.activation_is_05_auto_des_senders_distan": "Automatic IS-05 activation of remote senders",
