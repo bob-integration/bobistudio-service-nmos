@@ -1459,8 +1459,11 @@ def rebuild_model():
     # ajout. Si elle explose, elle ne doit pas emporter le 2110 avec elle.
     try:
         from . import mxl as _mxl
+        # ⚠ SON PROPRE Device, pas celui du 2110. Les deux surfaces n'ont ni le même transport
+        # ni la même autorité de routage ; les confondre rendait un contrôleur incapable de dire
+        # ce qu'il pouvait connecter (cf. `mxl.device_resource`).
         _mxl.build(new_devices, new_sources, new_flows, new_senders, new_receivers,
-                   _recv_state, _send_state, cluster_did, version)
+                   _recv_state, _send_state, _stable_uuid("device:mxl"), version)
         _mxl.reindex(_send_state)
         _mxl.resync_subscriptions(new_receivers, _recv_state, new_senders, _send_state)
     except Exception as e:
@@ -3429,6 +3432,7 @@ __manifest__ = {
         "nmos_node_label":       {"type": "str",  "default": "Bobi.Studio"},
         "nmos_node_description": {"type": "str",  "default": ""},
         "nmos_cluster_label":    {"type": "str",  "default": "Bobi.Studio 2110 I/O"},
+        "nmos_mxl_label":        {"type": "str",  "default": "Bobi.Studio — bus MXL"},
         # Mode de gestion des ressources NMOS : "auto" (chaque slot de conteneur auto-crée sa
         # ressource) | "static" (pool fixe : un slot n'émet que s'il est explicitement câblé).
         "nmos_mode":             {"type": "str",  "default": "auto"},

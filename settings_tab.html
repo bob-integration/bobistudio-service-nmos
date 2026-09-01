@@ -422,6 +422,12 @@
                 {{ _('service.nmos.autoriser_l_ecriture_is_05_sur_le_mxl') }}
             </label></div>
         </div>
+        <div class="row">
+            <div class="field" style="flex:1">
+                <label for="s_nmos_mxl_label">{{ _('service.nmos.label_du_device_mxl') }}</label>
+                <input type="text" id="s_nmos_mxl_label" class="wide" onchange="appliquerNmosAvance()">
+            </div>
+        </div>
         <div class="meta">{{ _('service.nmos.meta_mxl')|safe }}</div>
 
     </div>
@@ -631,6 +637,9 @@
                            'nmos_is07_ws', 'nmos_is09'];
     const _AVANCES_NUM = ['nmos_registre_gc_s', 'nmos_registre_pri', 'nmos_is07_port',
                           'nmos_is09_pri'];
+    // Le bus MXL a son PROPRE Device IS-04 depuis le 2026-09-01 : il lui faut donc son propre
+    // nom, sinon un controleur affiche deux Devices indiscernables.
+    const _AVANCES_STR = ['nmos_mxl_label'];
 
     window.appliquerNmosAvance = async function () {
         const payload = {};
@@ -641,6 +650,10 @@
         _AVANCES_NUM.forEach(k => {
             const el = document.getElementById('s_' + k);
             if (el && el.value !== '') payload[k] = parseInt(el.value, 10);
+        });
+        _AVANCES_STR.forEach(k => {
+            const el = document.getElementById('s_' + k);
+            if (el && el.value.trim() !== '') payload[k] = el.value.trim();
         });
         const r = await fetch('/api/settings', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -673,6 +686,10 @@
                 if (el && document.activeElement !== el && s[k] !== undefined && s[k] !== null) {
                     el.value = s[k];
                 }
+            });
+            _AVANCES_STR.forEach(k => {
+                const el = document.getElementById('s_' + k);
+                if (el && document.activeElement !== el && s[k]) el.value = s[k];
             });
             const d = document.getElementById('nmos_is09_domaine');
             if (d) d.textContent = (s.ptp_domain !== undefined && s.ptp_domain !== null)

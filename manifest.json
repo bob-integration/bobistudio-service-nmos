@@ -140,6 +140,10 @@
     "nmos_is07_entrant": {
       "type": "bool",
       "default": false
+    },
+    "nmos_mxl_label": {
+      "type": "str",
+      "default": "Bobi.Studio — bus MXL"
     }
   },
   "version": "0.4.1",

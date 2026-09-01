@@ -401,8 +401,42 @@ def _clone(d):
 # Construction du modèle (appelée par `rebuild_model`)
 # ══════════════════════════════════════════════════════════════════════════════════════════════
 
+def _label():
+    from . import _setting
+    return _setting("nmos_mxl_label", "Bobi.Studio — bus MXL")
+
+
+def device_resource(did, version):
+    """Device IS-04 PROPRE à la surface MXL, distinct de celui du 2110.
+
+    Les deux surfaces n'ont ni le même transport, ni la même autorité de routage : le 2110 se
+    connecte en IS-05, le bus MXL se câble par la page Câbles. Les avoir mises sur un seul Device
+    — nommé « 2110 I/O », alors que 92 % de ses ressources étaient du MXL — rendait un contrôleur
+    incapable de les distinguer : signalé le 2026-09-01, après un PATCH tenté sur un receiver MXL
+    (405) qui avait tout l'air d'un receiver 2110.
+
+    ⚠ Les ressources gardent leur UUID (dérivé du vmid, pas du device) : le déplacement ne casse
+    aucun abonnement IS-05 existant."""
+    from . import _asset_tags, _controls, _state
+    return {
+        "id": did,
+        "version": version,
+        "label": _label(),
+        "description": "Bus MXL interne — routage par l'orchestrateur (page Câbles), "
+                       "exposé en lecture pour la découverte",
+        "tags": _asset_tags(avec_fonction=True),
+        "type": "urn:x-nmos:device:generic",
+        "node_id": _state["node_id"],
+        "senders": [],
+        "receivers": [],
+        # Le MXL reste listé en IS-05 : le contrôleur doit pouvoir lire l'état d'abonnement, et
+        # le chemin d'écriture s'ouvrira par `nmos_mxl_ecriture`. Il annonce donc le même control.
+        "controls": _controls(),
+    }
+
+
 def build(new_devices, new_sources, new_flows, new_senders, new_receivers,
-          recv_state, send_state, cluster_did, version):
+          recv_state, send_state, mxl_did, version):
     """Ajoute les ressources MXL au modèle en cours de reconstruction.
 
     Appelée depuis `rebuild_model` APRÈS la passe conteneurs et la passe registre, AVANT le
@@ -415,12 +449,18 @@ def build(new_devices, new_sources, new_flows, new_senders, new_receivers,
     from app.database import db_get_containers
     if _setting_off():
         return
+    new_devices[mxl_did] = device_resource(mxl_did, version)
     for c in db_get_containers():
         try:
             _build_one(c, new_devices, new_sources, new_flows, new_senders, new_receivers,
-                       recv_state, send_state, cluster_did, version)
+                       recv_state, send_state, mxl_did, version)
         except Exception as e:
             log.warning("nmos/mxl: conteneur %s ignoré : %s", c.get("vmid"), e)
+    # Un Device sans aucune ressource n'apprend rien à un contrôleur et encombre sa liste : on ne
+    # l'annonce que s'il porte quelque chose. Cas réel : surface active, mais aucun conteneur MXL.
+    d = new_devices[mxl_did]
+    if not d["senders"] and not d["receivers"]:
+        del new_devices[mxl_did]
 
 
 def est_mxl(res_id, send_state, recv_state):
@@ -448,7 +488,7 @@ def _setting_off():
 
 
 def _build_one(c, new_devices, new_sources, new_flows, new_senders, new_receivers,
-               recv_state, send_state, cluster_did, version):
+               recv_state, send_state, mxl_did, version):
     vmid = c["vmid"]
     iu = c.get("instance_uuid") or ("vmid:%s" % vmid)
     hostname = c.get("hostname") or ""
@@ -485,11 +525,11 @@ def _build_one(c, new_devices, new_sources, new_flows, new_senders, new_receiver
         sid = _rid("source", iu, ess, slot)
         fid = _rid("flow",   iu, ess, slot)
         snd = _rid("sender", iu, ess, slot)
-        new_sources[sid] = _build_source(sid, cluster_did, vmid, hostname, lbl, ess, fmt, version)
-        new_flows[fid] = _build_flow(fid, cluster_did, sid, vmid, hostname, lbl, ess, fmt, version)
-        new_senders[snd] = _build_sender(snd, cluster_did, fid, vmid, hostname, lbl, version)
+        new_sources[sid] = _build_source(sid, mxl_did, vmid, hostname, lbl, ess, fmt, version)
+        new_flows[fid] = _build_flow(fid, mxl_did, sid, vmid, hostname, lbl, ess, fmt, version)
+        new_senders[snd] = _build_sender(snd, mxl_did, fid, vmid, hostname, lbl, version)
         _poser_grouphint(new_senders[snd], grp_tx[p["key"]])
-        new_devices[cluster_did]["senders"].append(snd)
+        new_devices[mxl_did]["senders"].append(snd)
         # Un Sender MXL est ACTIF par construction : le conteneur écrit ce flux tant qu'il tourne.
         # Il n'y a rien à « activer » — d'où master_enable=True et des transport_params RÉELS.
         st = empty_staged("sender", domain_id, flow_uuid(shm))
@@ -511,9 +551,9 @@ def _build_one(c, new_devices, new_sources, new_flows, new_senders, new_receiver
         slot = p["slot"]
         rid = _rid("receiver", iu, ess, slot)
         lbl = p.get("label") or ("%s entrée %s %d" % (label_base, ess, slot + 1))
-        new_receivers[rid] = _build_receiver(rid, cluster_did, vmid, hostname, lbl, ess, version)
+        new_receivers[rid] = _build_receiver(rid, mxl_did, vmid, hostname, lbl, ess, version)
         _poser_grouphint(new_receivers[rid], grp_rx[p["key"]])
-        new_devices[cluster_did]["receivers"].append(rid)
+        new_devices[mxl_did]["receivers"].append(rid)
         # L'état IS-05 d'un Receiver MXL est un CONSTAT du câble réellement posé (params du
         # conteneur), pas une mémoire. `_apply_wire` est le seul à écrire le câblage, et il peut
         # être déclenché hors NMOS (page Câbles, restauration de projet, insertion d'UDC) : une
