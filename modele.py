@@ -106,21 +106,33 @@ def liberer(nom):
 
 def _construire_appareil():
     from app.database import db_get_setting
-    from . import asset_info
+    from . import asset_info, _nom_instance
     # MÊME source que les tags BCP-002-02 de l'IS-04 (`nmos.asset_info`) : un contrôleur qui lit
     # les deux protocoles doit y trouver la même identité, pas deux versions du même appareil.
     a = asset_info()
+    # Chaque valeur dans SON champ, sans concaténation ni emprunt (MS-05-02 §NcProduct) :
+    #   · brandName = « brand name under which product is sold » → la marque du PRODUIT. Elle
+    #     portait le nom de l'entreprise CLIENTE : un contrôleur voyait « Bobi.Studio » vendu sous
+    #     la marque du client. Corrigé le 2026-09-01.
+    #   · uuid = « unique UUID of product (NOT product instance) » → constant. Il portait l'UUID de
+    #     l'installation, que `serialNumber` publie déjà juste en dessous : deux déploiements
+    #     annonçaient deux produits distincts, donc impossibles à regrouper.
+    #   · deviceName = « instance name, NOT product name » → le nom du système, pas « Bobi.Studio ».
+    # `userInventoryCode` reste NUL, et volontairement : il est écrivable par un contrôleur
+    # (« asset tracking identifier, user specified ») — c'est le code d'inventaire de l'exploitant.
+    # Y poser notre nom d'entreprise l'écraserait à chaque démarrage. L'organisation et le lieu
+    # partent en tags IS-04 propriétaires (cf. nmos.TAG_ORGANISATION / TAG_LOCATION).
     produit = {
         "name": a["product"],
         "key": "bobistudio-orchestrateur",
         "revisionLevel": str(db_get_setting("app_version", "") or "0"),
-        "brandName": db_get_setting("brand_org_name", "") or None,
-        "uuid": a["instance_id"],
+        "brandName": a["brand"],
+        "uuid": a["product_uuid"],
         "description": "Orchestrateur de production ST 2110 sur bus MXL",
     }
     fabricant = {"name": a["manufacturer"], "organizationId": None, "website": None}
     app = ncp.Appareil(produit, fabricant, serial=a["instance_id"],
-                       device_name=db_get_setting("nmos_node_label", "Bobi.Studio"))
+                       device_name=_nom_instance())
     return app
 
 

@@ -537,9 +537,25 @@ TAG_PRODUCT      = "urn:x-nmos:tag:asset:product/v1.0"
 TAG_INSTANCE_ID  = "urn:x-nmos:tag:asset:instance-id/v1.0"
 TAG_FUNCTION     = "urn:x-nmos:tag:asset:function/v1.0"
 
+# Tags PROPRIÉTAIRES de déploiement. Le propriétaire d'un appareil et son lieu n'ont PAS de champ
+# dans MS-05-02, et ce n'est pas un manque du modèle : il décrit le produit et son instance, pas
+# celui qui l'exploite. `userInventoryCode` en tiendrait lieu, mais il est écrivable par un
+# CONTRÔLEUR (« asset tracking identifier, user specified ») : y écrire notre nom d'entreprise,
+# c'est écraser à chaque démarrage le code d'inventaire que l'exploitant y a posé depuis son
+# système. On passe donc par des tags, qui voyagent avec le Node sans squatter de champ normatif.
+TAG_ORGANISATION = "urn:x-mxl:organisation"
+TAG_LOCATION     = "urn:x-mxl:location"
+
 ASSET_MANUFACTURER_DEFAUT = "BOBI SAS"
 ASSET_PRODUCT_DEFAUT      = "Bobi.Studio"
 ASSET_FUNCTION_DEFAUT     = "Gateway"
+# MS-05-02 §NcProduct : « Brand name under which product is sold ». C'est la marque du PRODUIT —
+# distincte du fabricant (BOBI SAS) et du nom de produit (Bobi.Studio).
+ASSET_BRAND_DEFAUT        = "Bobi"
+# « Unique UUID of product (NOT product instance) » : constant pour toutes les installations, sinon
+# deux déploiements annoncent deux produits différents et aucun contrôleur ne peut les regrouper.
+# L'instance, elle, a déjà son champ (`serialNumber`). UUIDv5 figé de bobi.studio/produit/orchestrateur.
+ASSET_PRODUCT_UUID        = "c495c79e-adb4-53ef-b0d0-894e7dfa2c42"
 
 
 def asset_info():
@@ -557,14 +573,21 @@ def asset_info():
         "manufacturer": _setting("nmos_asset_manufacturer", ASSET_MANUFACTURER_DEFAUT)
                         or ASSET_MANUFACTURER_DEFAUT,
         "product":      _setting("nmos_asset_product", ASSET_PRODUCT_DEFAUT) or ASSET_PRODUCT_DEFAUT,
+        "brand":        _setting("nmos_asset_brand", ASSET_BRAND_DEFAUT) or ASSET_BRAND_DEFAUT,
+        "product_uuid": ASSET_PRODUCT_UUID,
         "instance_id":  _get_node_id(),
         "function":     _setting("nmos_asset_function", ASSET_FUNCTION_DEFAUT)
                         or ASSET_FUNCTION_DEFAUT,
     }
 
 
-def _asset_tags(avec_fonction=False, base=None):
-    """Tags BCP-002-02 fusionnés dans `base` (tags déjà présents sur la ressource)."""
+def _asset_tags(avec_fonction=False, base=None, deploiement=False):
+    """Tags BCP-002-02 fusionnés dans `base` (tags déjà présents sur la ressource).
+
+    `deploiement` ajoute les tags propriétaires organisation/lieu : ils décrivent CE déploiement,
+    pas chaque appareil — les répéter sur les dizaines de Devices n'apprendrait rien de plus et
+    ferait grossir chaque enregistrement. Ils ne sont posés que s'ils ont une valeur : un tag vide
+    est un tag qui ment."""
     a = asset_info()
     tags = dict(base or {})
     tags[TAG_MANUFACTURER] = [a["manufacturer"]]
@@ -572,6 +595,13 @@ def _asset_tags(avec_fonction=False, base=None):
     tags[TAG_INSTANCE_ID]  = [a["instance_id"]]
     if avec_fonction:
         tags[TAG_FUNCTION] = [a["function"]]
+    if deploiement:
+        org  = (_setting("brand_org_name", "") or "").strip()
+        lieu = (_setting("brand_location", "") or "").strip()
+        if org:
+            tags[TAG_ORGANISATION] = [org]
+        if lieu:
+            tags[TAG_LOCATION] = [lieu]
     return tags
 
 
@@ -648,14 +678,42 @@ def _build_device_resource(did, vmid, hostname, version):
         "controls": _controls(),
     }
 
+# Valeurs que `nmos_node_label` a portées comme DÉFAUT au fil des versions. Elles ne peuvent pas
+# être distinguées d'une saisie volontaire autrement que par cette liste.
+_LABELS_HERITES = {"Bobi.Studio", "MXL Orchestrator", "bobistudio"}
+
+
+def _nom_instance():
+    """Nom d'INSTANCE de ce déploiement — « Régie A — Studio 3 », pas « Bobi.Studio ».
+
+    Ordre : la surcharge explicite (`nmos_node_label`) d'abord, sinon le nom du système saisi dans
+    Réglages → Personnalisation, sinon un défaut neutre. Avant, `nmos_node_label` était la SEULE
+    source : un exploitant qui renseignait soigneusement son nom de régie ne changeait rien à ce que
+    voyait le contrôleur, et le registre affichait « Bobi.Studio » — un nom de produit là où la
+    spec demande un nom d'instance. Deux vérités pour une même chose, dont une invisible."""
+    surcharge = (_setting("nmos_node_label", "") or "").strip()
+    # ★ Une surcharge qui vaut un ANCIEN DÉFAUT n'est pas un choix : c'est la valeur que le produit
+    # a écrite lui-même avant que ce réglage ne devienne une surcharge. La respecter reviendrait à
+    # laisser « Bobi.Studio » — un nom de produit — dans un champ qui demande un nom d'instance, sur
+    # toutes les installations existantes. On ne migre pas la base pour autant : on ignore ces
+    # valeurs à la LECTURE, ce qui rend le correctif effectif sans rien réécrire chez personne.
+    if surcharge in _LABELS_HERITES:
+        surcharge = ""
+    return surcharge or (_setting("brand_system_name", "") or "").strip() or ASSET_PRODUCT_DEFAUT
+
+
 def _build_node_resource(version):
     host = _get_host_address()
     return {
         "id": _state["node_id"],
         "version": version,
-        "label": _setting("nmos_node_label", "MXL Orchestrator"),
-        "description": _setting("nmos_node_description", "Bobi.Studio — provider NMOS centralisé"),
-        "tags": _asset_tags(),                         # BCP-002-02 (Node : sans fonction)
+        "label": _nom_instance(),
+        # `or` et pas seulement le défaut de `_setting` : une valeur ENREGISTRÉE VIDE (le cas de
+        # ce déploiement) n'est pas None, donc le défaut ne s'appliquait pas et le Node partait au
+        # registre sans description du tout.
+        "description": (_setting("nmos_node_description", "") or
+                        "Bobi.Studio — provider NMOS centralisé"),
+        "tags": _asset_tags(deploiement=True),         # BCP-002-02 (Node : sans fonction)
         "href": f"http://{host}:5000/",
         "hostname": socket.gethostname(),
         "api": {
