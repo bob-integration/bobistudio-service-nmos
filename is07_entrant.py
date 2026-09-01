@@ -34,44 +34,19 @@ import threading
 
 log = logging.getLogger(__name__)
 
-# rid → ClientIS07 vivant. Un seul par Receiver : réactiver remplace, jamais n'empile.
+# rid → ClientIS07 vivant. Un seul par connexion : réactiver remplace, jamais n'empile.
 _clients = {}
 _lock = threading.RLock()
 
-# Réglage : `is07_niveaux` = {receiver_id: uuid de niveau}
-CLE_REGLAGE = "is07_niveaux"
 
-
-def niveaux():
-    """{receiver_id: uuid de niveau} — l'affectation, telle qu'un exploitant l'a posée."""
-    try:
-        from app.database import db_get_setting
-        v = db_get_setting(CLE_REGLAGE)
-        return dict(v) if isinstance(v, dict) else {}
-    except Exception:
-        return {}
-
-
-def affecter(rid, level_uuid):
-    """Affecte (ou retire, avec None) le niveau qu'alimente ce Receiver.
-
-    Changer le niveau d'un Receiver ACTIF déplace sa contribution : on éteint l'ancienne avant de
-    poser la nouvelle, sinon la lampe précédente resterait allumée sans plus personne pour la
-    mettre à jour."""
-    from app.database import db_get_setting, db_set_setting
-    with _lock:
-        m = db_get_setting(CLE_REGLAGE)
-        m = dict(m) if isinstance(m, dict) else {}
-        if level_uuid:
-            m[str(rid)] = str(level_uuid)
-        else:
-            m.pop(str(rid), None)
-        db_set_setting(CLE_REGLAGE, m)
-        c = _clients.get(rid)
-    _eteindre(rid)
-    if c:
-        # Le client tourne toujours ; sa prochaine réception écrira sur le nouveau niveau.
-        log.info("IS-07 entrant : Receiver %s réaffecté au niveau %s", rid, level_uuid)
+def _conn_de(rid):
+    """La connexion IS-07 entrante que sert ce Receiver, ou None."""
+    from app.database import db_get_is07_connections
+    from .is07 import _rid_conn
+    for c in db_get_is07_connections():
+        if _rid_conn(c["id"]) == rid:
+            return c
+    return None
 
 
 def _eteindre(rid):
@@ -87,8 +62,7 @@ def _index_de(shm, level_uuid):
     """Index de tally de ce flux CHEZ LE PORTEUR du niveau, ou None.
 
     ⚠ CHEZ LE PORTEUR, pas dans une table à plat : deux porteurs peuvent employer le même index
-    pour des sources différentes, et se tromper de table allume un rouge sur le mauvais signal.
-    C'est la même résolution que le distributeur — on l'appelle, on ne la refait pas."""
+    pour des sources différentes, et se tromper de table allume un rouge sur le mauvais signal."""
     try:
         from app.database import db_get_tsl_connections, db_get_tsl_mapping
         from services.tsl import resolve_ref
@@ -105,85 +79,114 @@ def _index_de(shm, level_uuid):
     return None
 
 
-def _shm_du_groupe(rid):
-    """Le flux vidéo du groupe de sortie que ce Receiver accompagne, ou None.
-
-    Une seule résolution dans tout le produit (`is07._flux_du_groupe`) : deux dérivations du même
-    objet finissent par ne plus dire la même chose, et celle-ci décide de ce qu'on expose ET de ce
-    qu'on active."""
-    from . import _senders
-    from .is07 import _groupes_de_sortie, _flux_du_groupe, _rid_recv
-    for groupe, _lbl in _groupes_de_sortie(_senders):
-        if _rid_recv(groupe) == rid:
-            return _flux_du_groupe(groupe, _senders)
-    return None
-
-
 def activer(rid, actif, connection_uri=None, source_ids=None):
-    """Appelée par l'activation IS-05. Démarre ou arrête l'écoute de ce Receiver.
+    """Appelée par l'activation IS-05. Démarre ou arrête l'écoute de cette connexion.
+
+    ★ LES SOURCES ÉCOUTÉES VIENNENT DE LA CORRESPONDANCE, pas du PATCH. C'est le pendant exact de
+    TSL : une connexion écoute tout ce que la table lui associe, et le contrôleur ne dit que
+    l'ADRESSE de l'émetteur. `source_ids` reste accepté (un contrôleur peut restreindre), mais la
+    correspondance fait foi pour savoir ce que chaque Source désigne chez nous.
 
     Renvoie un court diagnostic, journalisé : une activation qui ne prend pas doit DIRE pourquoi.
     Sans ça, un contrôleur voit un 200, l'exploitant voit une lampe éteinte, et rien ne relie les
     deux."""
     from .is07_client import ClientIS07
+    from app.database import db_get_is07_mapping
     with _lock:
         ancien = _clients.pop(rid, None)
     if ancien:
         ancien.arreter()
     # ⚠ DEUX CHEMINS D'EXTINCTION, ET C'EST VOULU. Le client annonce déjà « je ne sais plus rien »
     # en se fermant (`_fermer` → `sur_etat(None, None)`), donc celui-ci fait souvent double
-    # emploi — une mutation l'a montré. Il reste parce qu'il couvre le cas que l'autre ne couvre
-    # pas : désactiver un Receiver dont AUCUN client ne tourne (activation refusée plus tôt, ou
-    # contribution laissée par une exécution précédente). Sans lui, cette lampe-là ne s'éteint
-    # jamais.
+    # emploi. Il reste parce qu'il couvre le cas que l'autre ne couvre pas : désactiver une
+    # connexion dont AUCUN client ne tourne. Sans lui, cette lampe-là ne s'éteint jamais.
     _eteindre(rid)
 
     if not actif:
         return "arrêté"
+    c = _conn_de(rid)
+    if not c:
+        return "connexion inconnue"
     if not connection_uri:
         # On REFUSE de deviner l'URL. Elle vient du contrôleur, et un repli inventé
         # connecterait à un émetteur que personne n'a désigné.
-        log.warning("IS-07 entrant : Receiver %s activé SANS connection_uri — rien à écouter", rid)
+        log.warning("IS-07 entrant : « %s » activée SANS connection_uri — rien à écouter",
+                    c.get("name"))
         return "sans connection_uri"
-    niveau = niveaux().get(str(rid))
+    niveau = c.get("level_uuid")
     if not niveau:
-        log.warning("IS-07 entrant : Receiver %s activé mais AUCUN NIVEAU affecté — le tally "
-                    "reçu n'irait nulle part (Réglages → NMOS)", rid)
+        log.warning("IS-07 entrant : « %s » activée mais AUCUN NIVEAU affecté — le tally reçu "
+                    "n'irait nulle part (Réglages → NMOS)", c.get("name"))
         return "sans niveau affecté"
-    shm = _shm_du_groupe(rid)
-    if not shm:
-        log.warning("IS-07 entrant : Receiver %s — groupe de sortie introuvable", rid)
-        return "groupe introuvable"
-    index = _index_de(shm, niveau)
-    if index is None:
-        log.warning("IS-07 entrant : Receiver %s — le flux %s n'a pas d'index chez le porteur du "
-                    "niveau : le tally reçu ne serait adressable par personne", rid, shm)
-        return "flux sans index de tally"
+
+    # Source de l'émetteur → (notre flux, index de tally). Résolu UNE FOIS à l'activation : le
+    # faire à chaque message ferait deux requêtes SQL par trame de tally.
+    table = {}
+    for m in db_get_is07_mapping(c["id"]):
+        shm = (m.get("source_shm") or "").strip()
+        if not shm:
+            continue
+        idx = _index_de(shm, niveau)
+        if idx is None:
+            # Le signal est bien désigné, mais il n'est adressable par personne sur ce niveau :
+            # le tally reçu ne pourrait pas être posé. On le dit plutôt que de l'avaler.
+            log.warning("IS-07 entrant : « %s » — %s n'a pas d'index de tally sur son niveau",
+                        c.get("name"), shm)
+            continue
+        table[str(m["source_id"])] = (shm, idx)
+    if not table:
+        log.warning("IS-07 entrant : « %s » activée mais sa correspondance est vide — aucune "
+                    "Source de l'émetteur ne désigne un de nos signaux (page Labels)",
+                    c.get("name"))
+        return "correspondance vide"
+
+    # ★ CETTE CONNEXION TIENT SON PROPRE ÉTAT. `poser_tally` remplace la contribution ENTIÈRE
+    # d'une source : poser la seule case qui vient de changer éteindrait toutes les autres à
+    # chaque message reçu. On garde donc ici ce que cette connexion affirme, et on le repose en
+    # entier — c'est un dictionnaire de quelques entrées, relu par un seul fil.
+    affirme = {}
 
     def _sur_etat(source_id, valeur):
         # `(None, None)` = le client a perdu la liaison et ne sait plus rien.
         if source_id is None:
+            affirme.clear()
             _eteindre(rid)
             return
+        cible = table.get(str(source_id))
+        if not cible:
+            return                       # une Source à laquelle on ne s'est pas abonné
+        cle = (cible[1], niveau)
+        if valeur in (None, "off"):
+            affirme.pop(cle, None)
+        else:
+            affirme[cle] = valeur
         from services import tsl
-        tsl.poser_tally("is07:%s" % rid,
-                        {} if valeur in (None, "off") else {(index, niveau): valeur})
+        tsl.poser_tally("is07:%s" % rid, dict(affirme))
 
-    c = ClientIS07(connection_uri, source_ids or [], _sur_etat, nom="rx-%s" % rid[:8])
+    ecoutees = [s for s in (source_ids or []) if s in table] or list(table)
+    cl = ClientIS07(connection_uri, ecoutees, _sur_etat, nom=c.get("name") or rid[:8])
     with _lock:
-        _clients[rid] = c
-    c.demarrer()
-    log.info("IS-07 entrant : Receiver %s écoute %s (source %s) → index %s, niveau %s",
-             rid, connection_uri, (source_ids or ["?"])[0], index, niveau)
+        _clients[rid] = cl
+    cl.demarrer()
+    log.info("IS-07 entrant : « %s » écoute %s — %d Source(s) → niveau %s",
+             c.get("name"), connection_uri, len(ecoutees), niveau)
     return "en écoute"
 
 
 def etat():
-    """Ce que fait chaque Receiver entrant — pour l'interface et le diagnostic."""
+    """Ce que fait chaque connexion entrante — pour l'interface et le diagnostic."""
+    from app.database import db_get_is07_connections
+    from .is07 import _rid_conn
     with _lock:
         clients = dict(_clients)
-    aff = niveaux()
-    return {rid: dict(c.etat(), niveau=aff.get(str(rid))) for rid, c in clients.items()}
+    out = {}
+    for c in db_get_is07_connections():
+        rid = _rid_conn(c["id"])
+        cl = clients.get(rid)
+        out[rid] = dict(cl.etat() if cl else {"connecte": False},
+                        id=c["id"], nom=c.get("name"), niveau=c.get("level_uuid"),
+                        active=bool(c.get("enabled")))
+    return out
 
 
 def arreter_tout():

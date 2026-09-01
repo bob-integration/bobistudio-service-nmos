@@ -240,6 +240,19 @@ def entrant_actif():
     return str(_setting("nmos_is07_entrant", "0")).strip().lower() in ("1", "true", "on", "yes")
 
 
+def _rid_conn(cid):
+    """Identité d'un Receiver de tally entrant, dérivée de SA CONNEXION.
+
+    ★ UN RECEIVER PAR CONNEXION, PAS PAR SORTIE. On en publiait un par groupe de sortie
+    BCP-002-01 — 99 sur le banc pour 6 utiles. C'est la lecture littérale de la BCP, mais elle
+    répond à la mauvaise question : ce qu'un exploitant choisit, ce n'est pas « quelles sorties
+    peuvent recevoir un tally », c'est « quel protocole écrit dans quel niveau ». Exactement
+    comme une connexion TSL. Le signal concerné vient de la correspondance
+    (`is07_mapping`), pas du découpage des ressources."""
+    from . import _stable_uuid
+    return _stable_uuid("is07:recv:conn:%s" % cid)
+
+
 def _rid_recv(groupe):
     from . import _stable_uuid
     return _stable_uuid("is07:receiver:%s" % groupe)
@@ -309,8 +322,17 @@ def _a_un_index(shm):
     return False
 
 
+# ⚠ CE QUI SUIT N'EST PLUS SUR LE CHEMIN DES RECEIVERS. `candidats`/`exposes`/`mode_exposition`
+# ont été écrits pour arbitrer un Receiver PAR SORTIE ; le modèle est passé à un Receiver par
+# CONNEXION (cf. `_rid_conn`), ce qui rend l'arbitrage sans objet — il n'y a plus que les
+# connexions qu'un exploitant a créées. On les garde délibérément (décision du 2026-09-01) : le
+# même arbitrage se posera peut-être pour les Sources SORTANTES, aujourd'hui filtrées
+# implicitement par la correspondance TSL. Rien ne les appelle : ne pas croire qu'elles agissent.
+
 def candidats(senders):
     """Tous les groupes de sortie et ce qu'on peut en faire — exposés ou non.
+
+    ⚠ HORS CHEMIN depuis le 2026-09-01 (cf. le bloc ci-dessus).
 
     ★ C'EST LA LISTE QUE L'EXPLOITANT ARBITRE. Sans elle, on publiait un Receiver par groupe,
     soit 99 sur ce banc, dont 6 seulement pouvaient recevoir quoi que ce soit : un contrôleur se
@@ -369,18 +391,30 @@ def exposes(senders):
 
 
 def receivers_depuis(senders, device_id, version):
-    """{"receivers": [...], "connection": {...}} — un Receiver de tally par groupe EXPOSÉ."""
-    if not actif():
+    """{"receivers": [...], "connection": {...}} — un Receiver par connexion IS-07 entrante.
+
+    `senders` n'est plus lu : il servait à découper par groupe de sortie. On le garde dans la
+    signature parce que l'appelant le passe déjà et qu'un jour la BCP-002-01 pourra vouloir un
+    grouphint ici — mais rien n'en dépend aujourd'hui."""
+    if not actif() or not entrant_actif():
         return {"receivers": [], "connection": {}}
     from . import _primary_iface
+    try:
+        from app.database import db_get_is07_connections
+        conns = db_get_is07_connections()
+    except Exception as e:
+        log.warning("nmos/is07 : connexions entrantes illisibles (%s)", e)
+        return {"receivers": [], "connection": {}}
     recs, conn = [], {}
-    for _c in exposes(senders):
-        groupe, libelle, rid = _c["groupe"], _c["libelle"], _c["id"]
+    for c in conns:
+        if not c.get("enabled"):
+            continue
+        rid = _rid_conn(c["id"])
+        nom = c.get("name") or ("IS-07 #%s" % c["id"])
         recs.append({
             "id": rid, "version": version,
-            "label": "%s — tally" % libelle,
-            "description": "Receiver d'événements tally (IS-07) du groupe %s" % libelle,
-            "tags": {"urn:x-nmos:tag:grouphint/v1.0": ["%s:tally" % groupe]},
+            "label": nom,
+            "description": "Receiver d'événements tally (IS-07) — écrit dans un niveau de tally",
             "device_id": device_id,
             "transport": TRANSPORT,
             "format": "urn:x-nmos:format:data",
@@ -395,15 +429,16 @@ def receivers_depuis(senders, device_id, version):
             # `connection_uri` nul tant qu'aucun contrôleur n'a patché : c'est LUI qui dit où se
             # connecter, pas nous.
             "transport_params": [{"connection_uri": None, "connection_authorization": False,
-                                  "ext_is_07_source_id": None, "ext_is_07_rest_api_url": None}],
+                                  "ext_is_07_rest_api_url": None}],
             "activation": {"mode": None, "requested_time": None, "activation_time": None},
         }
         conn[rid] = {
             "constraints": [{"connection_uri": {}, "connection_authorization": {},
-                             "ext_is_07_source_id": {}, "ext_is_07_rest_api_url": {}}],
+                             "ext_is_07_rest_api_url": {}}],
             "staged": etat, "active": json.loads(json.dumps(etat)),
         }
     return {"receivers": recs, "connection": conn}
+
 
 # ══════════════════════════════════════════════════════════════════════════════════════════════
 # Events API (REST)
