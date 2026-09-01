@@ -22,6 +22,8 @@
             onclick="switchSubTab('nmos','ressources')">{{ _('settings.nmos.sub.ressources') }}</button>
     <button class="subtab" id="subtab-btn-nmos-controle"
             onclick="switchSubTab('nmos','controle')">{{ _('settings.nmos.sub.controle') }}</button>
+    <button class="subtab" id="subtab-btn-nmos-tally"
+            onclick="switchSubTab('nmos','tally')">{{ _('settings.nmos.sub.tally') }}</button>
     <button class="subtab" id="subtab-btn-nmos-mxl"
             onclick="switchSubTab('nmos','mxl')">{{ _('settings.nmos.sub.mxl') }}</button>
     <button class="subtab" id="subtab-btn-nmos-installation"
@@ -360,6 +362,49 @@
 
 </div>
 
+<div id="nmos-tab-tally" style="display:none">
+
+    <h2>{{ _('service.nmos.is07.titre') }}</h2>
+    <div class="form">
+        <div class="meta" style="margin-bottom:var(--space-3)">{{ _('service.nmos.is07.intro')|safe }}</div>
+
+        <div class="row" style="align-items:center">
+            <div class="field" style="align-self:center"><label style="display:flex; align-items:center; gap:var(--space-2)">
+                <input type="checkbox" class="ios-toggle" id="s_nmos_is07" onchange="is07Appliquer()">
+                {{ _('service.nmos.is07.publier') }}
+            </label></div>
+            <div class="field" style="align-self:center"><label style="display:flex; align-items:center; gap:var(--space-2)">
+                <input type="checkbox" class="ios-toggle" id="s_nmos_is07_entrant" onchange="is07Appliquer()">
+                {{ _('service.nmos.is07.entrant') }}
+            </label></div>
+            <div class="field" style="align-self:center"><label style="display:flex; align-items:center; gap:var(--space-2)">
+                <input type="checkbox" class="ios-toggle" id="s_nmos_is07_ws" onchange="is07Appliquer()">
+                {{ _('service.nmos.is07.ws') }}
+            </label></div>
+        </div>
+
+        <h3 style="margin-top:var(--space-4)">{{ _('service.nmos.is07.conns_titre') }}</h3>
+        <div class="meta" style="margin-bottom:var(--space-2)">{{ _('service.nmos.is07.conns_intro')|safe }}</div>
+        <div class="table-wrap">
+            <table class="table" style="width:100%">
+                <thead><tr>
+                    <th style="width:80px">{{ _('service.nmos.is07.th_active') }}</th>
+                    <th>{{ _('service.nmos.is07.th_nom') }}</th>
+                    <th style="width:220px">{{ _('service.nmos.is07.th_niveau') }}</th>
+                    <th>{{ _('service.nmos.is07.th_activee_par') }}</th>
+                    <th style="width:170px">{{ _('service.nmos.is07.th_etat') }}</th>
+                    <th style="width:150px"></th>
+                </tr></thead>
+                <tbody id="is07_conns_tbody">
+                    <tr><td colspan="6" class="meta">—</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <button class="btn" style="margin-top:var(--space-2)" onclick="is07ConnAjouter()">
+            {{ _('service.nmos.is07.ajouter') }}</button>
+    </div>
+</div>
+
 <div id="nmos-tab-mxl" style="display:none">
 
 <div class="card" style="margin-top:var(--space-4)">
@@ -648,6 +693,128 @@
         }
     }, 3000);
 })();
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// IS-07 entrant — une connexion = un niveau, comme en TSL
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// ★ CET ÉCRAN NE RÈGLE QUE CE QUI EST À NOUS. L'URL et la Source à écouter viennent d'un
+// contrôleur externe, par un PATCH IS-05 : elles sont en LECTURE, avec la mention de qui les a
+// posées. Ce qu'on choisit ici, c'est le NIVEAU — laisser un contrôleur le décider lui donnerait
+// la main sur une chaîne de destination qui n'est pas la sienne.
+//
+// ⚠ La correspondance « Source de l'émetteur → notre signal » ne vit PAS ici : elle est dans la
+// page Labels, une colonne par connexion, à côté des colonnes TSL. C'est le même geste, et le
+// dupliquer ici obligerait un site qui reçoit des deux protocoles à tenir deux listes.
+let _is07Conns = [], _is07Niveaux = [];
+
+async function is07Charger() {
+    try {
+        const [rc, rn] = await Promise.all([
+            fetch('/api/tally/is07/connections'), fetch('/api/tally/levels')]);
+        const j = rc.ok ? await rc.json() : {connections: []};
+        _is07Conns = j.connections || [];
+        _is07Niveaux = rn.ok ? await rn.json() : [];
+    } catch (e) { _is07Conns = []; _is07Niveaux = []; }
+    is07Rendre();
+}
+
+function _is07Etat(c) {
+    const cl = c.client || {};
+    if (!c.enabled) return ['off', '{{ _("service.nmos.is07.st_coupee") }}'];
+    if (!c.level_uuid) return ['ko', '{{ _("service.nmos.is07.st_sans_niveau") }}'];
+    if (cl.connecte) {
+        const d = cl.dernier_etat_il_y_a_s;
+        return ['on', d == null ? '{{ _("service.nmos.is07.st_ecoute") }}'
+                : '{{ _("service.nmos.is07.st_etat_il_y_a") }}'.replace('{d}', Math.round(d))];
+    }
+    if (c.master_enable) return ['warn', '{{ _("service.nmos.is07.st_activee_muette") }}'];
+    return ['off', '{{ _("service.nmos.is07.st_attente") }}'];
+}
+
+function is07Rendre() {
+    const tb = document.getElementById('is07_conns_tbody');
+    if (!tb) return;
+    if (!_is07Conns.length) {
+        tb.innerHTML = '<tr><td colspan="6" class="meta">'
+            + '{{ _("service.nmos.is07.aucune") }}' + '</td></tr>';
+        return;
+    }
+    const COUL = {on: 'var(--status-running-fg)', ko: 'var(--status-stopped-fg)',
+                  warn: 'var(--status-warning-fg)', off: 'var(--status-unknown-fg)'};
+    tb.innerHTML = _is07Conns.map(c => {
+        const [e, txt] = _is07Etat(c);
+        const opts = '<option value="">— {{ _("service.nmos.is07.aucun_niveau") }} —</option>'
+            + _is07Niveaux.map(n => `<option value="${n.uuid}"${n.uuid === c.level_uuid ? ' selected' : ''}>`
+                + `${n.num} — ${_nEsc(n.nom || '')}</option>`).join('');
+        // L'URL et la Source viennent du contrôleur : lecture seule, et on le DIT — sinon on
+        // essaiera de les saisir ici.
+        const source = c.connection_uri
+            ? `<span style="font-family:var(--font-mono);font-size:.8em">${_nEsc(c.connection_uri)}</span>`
+              + `<div class="meta" style="font-size:.78em">🔒 {{ _("service.nmos.is07.pose_par_is05") }}</div>`
+            : `<span class="meta">{{ _("service.nmos.is07.aucun_controleur") }}</span>`;
+        return `<tr data-cid="${c.id}">
+            <td><input type="checkbox" class="ios-toggle is07-actif"${c.enabled ? ' checked' : ''}></td>
+            <td><input type="text" class="is07-nom" value="${_nEsc(c.name || '')}" style="width:100%"></td>
+            <td><select class="is07-niveau" style="width:100%">${opts}</select></td>
+            <td>${source}</td>
+            <td><span style="display:inline-flex;align-items:center;gap:6px">
+                <i style="width:8px;height:8px;border-radius:50%;background:${COUL[e]};display:inline-block"></i>
+                <span style="font-size:.85em">${txt}</span></span></td>
+            <td style="text-align:right">
+                <button class="btn btn-green" style="padding:2px 8px;font-size:.8em"
+                        onclick="is07ConnEnregistrer(${c.id})">{{ _("service.nmos.is07.enregistrer") }}</button>
+                <button class="btn btn-red" style="padding:2px 8px;font-size:.8em;margin-left:4px"
+                        onclick="is07ConnSupprimer(${c.id})">✕</button>
+            </td></tr>`;
+    }).join('');
+}
+
+function _nEsc(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+async function is07ConnAjouter() {
+    const r = await fetch('/api/tally/is07/connections', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: '{{ _("service.nmos.is07.nouvelle") }}', enabled: 0})});
+    if (r.ok) is07Charger();
+    else mxlToast('{{ _("service.nmos.is07.err_creation") }}', 'error');
+}
+
+async function is07ConnEnregistrer(cid) {
+    const tr = document.querySelector(`#is07_conns_tbody tr[data-cid="${cid}"]`);
+    if (!tr) return;
+    const r = await fetch('/api/tally/is07/connections/' + cid, {
+        method: 'PUT', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            name: tr.querySelector('.is07-nom').value,
+            enabled: tr.querySelector('.is07-actif').checked ? 1 : 0,
+            level_uuid: tr.querySelector('.is07-niveau').value || null})});
+    if (r.ok) { mxlToast('{{ _("service.nmos.is07.enregistree") }}', 'success'); is07Charger(); }
+    else       { mxlToast('{{ _("service.nmos.is07.err_enregistrement") }}', 'error'); }
+}
+
+async function is07ConnSupprimer(cid) {
+    // ⚠ Supprimer une connexion retire aussi sa correspondance et fait DISPARAÎTRE son Receiver
+    // d'IS-04 : un contrôleur qui l'avait activée voit sa ressource s'évanouir, pas se
+    // désactiver. Ce n'est pas anodin, donc on le demande.
+    if (!confirm('{{ _("service.nmos.is07.confirmer_suppression") }}')) return;
+    const r = await fetch('/api/tally/is07/connections/' + cid, {method: 'DELETE'});
+    if (r.ok) { mxlToast('{{ _("service.nmos.is07.supprimee") }}', 'success'); is07Charger(); }
+    else       { mxlToast('{{ _("service.nmos.is07.err_suppression") }}', 'error'); }
+}
+
+async function is07Appliquer() {
+    const b = (id) => document.getElementById(id) && document.getElementById(id).checked ? '1' : '0';
+    await fetch('/api/settings', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({nmos_is07: b('s_nmos_is07'),
+                              nmos_is07_entrant: b('s_nmos_is07_entrant'),
+                              nmos_is07_ws: b('s_nmos_is07_ws')})});
+    mxlToast('{{ _("service.nmos.is07.reglages_appliques") }}', 'success');
+    is07Charger();
+}
 </script>
 
 
