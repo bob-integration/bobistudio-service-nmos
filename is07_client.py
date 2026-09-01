@@ -34,6 +34,11 @@ les 5 s ; un serveur conforme ferme la session après 12 s de silence. Un client
 d'écouter est donc déconnecté au bout de douze secondes, sans erreur visible — il ne reçoit
 simplement plus rien.
 
+★ **`wss://` est vérifié comme le ferait un navigateur** — chaîne ET nom — et pas comme le produit
+parle à ses propres agents, où le contrôle de nom est coupé faute de SAN sur une IP macvlan. Un
+contrôleur à certificat auto-signé se déclare par `is07_tls_ca` ; couper la vérification demande un
+réglage explicite, et se rappelle à chaque connexion.
+
 ★ **La reconnexion a des PALIERS.** Une boucle de reconnexion sans palier fuit des descripteurs et
 finit par tuer le nœud — c'est arrivé ici, sur un autre chemin (9,7 M de fd). On plafonne, et on ne
 tient qu'une socket à la fois.
@@ -44,6 +49,7 @@ import json
 import logging
 import os
 import socket
+import ssl
 import struct
 import threading
 import time
@@ -65,18 +71,58 @@ VALEURS = ("off", "red", "green", "amber")
 
 
 def _url(uri):
-    """(hôte, port, chemin) d'une URL `ws://` ou `wss://`. `wss` est refusé, faute de TLS ici."""
+    """(hôte, port, chemin, tls) d'une URL `ws://` ou `wss://`."""
     from urllib.parse import urlparse
     u = urlparse(uri or "")
-    if u.scheme not in ("ws", "http"):
-        raise ValueError("schéma non géré : %r (wss/TLS n'est pas implémenté)" % (u.scheme,))
-    port = u.port or 80
+    if u.scheme not in ("ws", "wss", "http", "https"):
+        raise ValueError("schéma non géré : %r" % (u.scheme,))
+    tls = u.scheme in ("wss", "https")
+    port = u.port or (443 if tls else 80)
     chemin = u.path or "/"
     if u.query:
         chemin += "?" + u.query
     if not u.hostname:
         raise ValueError("hôte absent dans %r" % (uri,))
-    return u.hostname, port, chemin
+    return u.hostname, port, chemin, tls
+
+
+def _contexte_tls(hote):
+    """Le contexte TLS pour joindre un émetteur tiers en `wss://`.
+
+    ★ LE DÉFAUT N'EST PAS CELUI DE NOS AGENTS. Pour parler à nos propres conteneurs, le produit
+    vérifie la chaîne contre la CA interne mais coupe le contrôle de NOM — une IP macvlan n'a pas
+    de SAN correspondant (cf. `app/deploy.py`). Ici c'est le serveur de quelqu'un d'autre : on
+    applique le défaut standard, chaîne ET nom vérifiés. Reprendre le motif interne reviendrait à
+    accepter n'importe quel certificat valide, pour n'importe quel hôte.
+
+    ★ DEUX ÉCHAPPATOIRES, ET AUCUNE N'EST SILENCIEUSE :
+      · `is07_tls_ca` — un fichier de CA du site, pour un contrôleur à certificat auto-signé.
+        C'est la bonne réponse : la chaîne reste vérifiée, contre VOTRE autorité.
+      · `is07_tls_verifier=0` — plus aucune vérification. Un avertissement est journalisé à
+        CHAQUE connexion : un réglage dangereux qui ne se rappelle pas finit par être oublié, et
+        c'est alors une liaison qui se croit authentifiée sans l'être."""
+    ctx = ssl.create_default_context()
+    try:
+        from app.database import db_get_setting
+        ca = (db_get_setting("is07_tls_ca", "") or "").strip()
+        verifier = str(db_get_setting("is07_tls_verifier", "1")).strip().lower() \
+            not in ("0", "false", "off", "no")
+    except Exception:
+        ca, verifier = "", True
+    if not verifier:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        log.warning("IS-07 client : certificat de %s NON VÉRIFIÉ (is07_tls_verifier=0) — la "
+                    "liaison est chiffrée mais le pair n'est pas authentifié", hote)
+        return ctx
+    if ca:
+        try:
+            ctx.load_verify_locations(cafile=ca)
+        except Exception as e:
+            # On NE RETOMBE PAS sur le magasin système en silence : un fichier de CA illisible
+            # veut dire que l'exploitant CROIT vérifier contre son autorité.
+            raise IOError("CA `%s` illisible (%s)" % (ca, e))
+    return ctx
 
 
 class ClientIS07:
@@ -173,8 +219,12 @@ class ClientIS07:
 
     # ── RFC 6455, côté client ────────────────────────────────────────────────
     def _session(self):
-        hote, port, chemin = _url(self.uri)
+        hote, port, chemin, tls = _url(self.uri)
         self._sock = socket.create_connection((hote, port), timeout=5)
+        if tls:
+            # `server_hostname` porte le SNI ET le contrôle de nom : le passer est ce qui rend la
+            # vérification effective.
+            self._sock = _contexte_tls(hote).wrap_socket(self._sock, server_hostname=hote)
         self._sock.settimeout(5)
         cle = base64.b64encode(os.urandom(16)).decode("ascii")
         self._sock.sendall(
