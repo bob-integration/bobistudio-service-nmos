@@ -32,6 +32,8 @@ ne surveille.
 import logging
 import threading
 
+from app import tally as _tally
+
 log = logging.getLogger(__name__)
 
 # rid → ClientIS07 vivant. Un seul par connexion : réactiver remplace, jamais n'empile.
@@ -52,31 +54,11 @@ def _conn_de(rid):
 def _eteindre(rid):
     """Retire tout ce que ce Receiver affirmait, sans toucher aux autres écrivains."""
     try:
-        from services import tsl
-        tsl.poser_tally("is07:%s" % rid, {})
+        from app import tally
+        tally.poser_tally("is07:%s" % rid, {})
     except Exception as e:
         log.debug("IS-07 entrant : extinction de %s impossible (%s)", rid, e)
 
-
-def _index_de(shm, level_uuid):
-    """Index de tally de ce flux CHEZ LE PORTEUR du niveau, ou None.
-
-    ⚠ CHEZ LE PORTEUR, pas dans une table à plat : deux porteurs peuvent employer le même index
-    pour des sources différentes, et se tromper de table allume un rouge sur le mauvais signal."""
-    try:
-        from app.database import db_get_tsl_connections, db_get_tsl_mapping
-        from services.tsl import resolve_ref
-        cible = resolve_ref(shm) or shm
-        for c in db_get_tsl_connections():
-            if c.get("level_uuid") != level_uuid:
-                continue
-            for m in db_get_tsl_mapping(c["id"]):
-                ref = (m.get("source_shm") or "").strip()
-                if ref and (resolve_ref(ref) or ref) == cible:
-                    return int(m.get("tsl_index") or 0)
-    except Exception as e:
-        log.debug("IS-07 entrant : index de %s indéterminable (%s)", shm, e)
-    return None
 
 
 def activer(rid, actif, connection_uri=None, source_ids=None):
@@ -119,21 +101,19 @@ def activer(rid, actif, connection_uri=None, source_ids=None):
                     "n'irait nulle part (Réglages → NMOS)", c.get("name"))
         return "sans niveau affecté"
 
-    # Source de l'émetteur → (notre flux, index de tally). Résolu UNE FOIS à l'activation : le
-    # faire à chaque message ferait deux requêtes SQL par trame de tally.
+    # Source de l'émetteur → NOTRE FLUX. Résolu une fois à l'activation.
+    #
+    # ★ Il n'y a plus d'index ici. IS-07 désigne une Source, nous désignons un flux, et le
+    # modèle de tally s'adresse par flux : la chaîne est directe. L'ancienne version traduisait
+    # en index TSL et REFUSAIT toute source qui n'en avait pas — un signal parfaitement désigné
+    # de bout en bout était jeté parce qu'un protocole tiers, absent du chemin, ne le connaissait
+    # pas. Le tally d'un flux n'a pas à dépendre d'un protocole qu'on n'emploie pas.
     table = {}
     for m in db_get_is07_mapping(c["id"]):
         shm = (m.get("source_shm") or "").strip()
         if not shm:
             continue
-        idx = _index_de(shm, niveau)
-        if idx is None:
-            # Le signal est bien désigné, mais il n'est adressable par personne sur ce niveau :
-            # le tally reçu ne pourrait pas être posé. On le dit plutôt que de l'avaler.
-            log.warning("IS-07 entrant : « %s » — %s n'a pas d'index de tally sur son niveau",
-                        c.get("name"), shm)
-            continue
-        table[str(m["source_id"])] = (shm, idx)
+        table[str(m["source_id"])] = _tally.resolve_ref(shm) or shm
     if not table:
         log.warning("IS-07 entrant : « %s » activée mais sa correspondance est vide — aucune "
                     "Source de l'émetteur ne désigne un de nos signaux (page Labels)",
@@ -155,13 +135,13 @@ def activer(rid, actif, connection_uri=None, source_ids=None):
         cible = table.get(str(source_id))
         if not cible:
             return                       # une Source à laquelle on ne s'est pas abonné
-        cle = (cible[1], niveau)
+        cle = (cible, niveau)
         if valeur in (None, "off"):
             affirme.pop(cle, None)
         else:
             affirme[cle] = valeur
-        from services import tsl
-        tsl.poser_tally("is07:%s" % rid, dict(affirme))
+        from app import tally
+        tally.poser_tally("is07:%s" % rid, dict(affirme))
 
     ecoutees = [s for s in (source_ids or []) if s in table] or list(table)
     cl = ClientIS07(connection_uri, ecoutees, _sur_etat, nom=c.get("name") or rid[:8])

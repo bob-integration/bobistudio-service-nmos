@@ -6,10 +6,15 @@ publié sur deux transports, pour deux publics.
 
 ═══ Ce qui est publié, et comment il est adressé ═════════════════════════════════════════════
 
-Notre tally est adressé **par FLUX** : la table de correspondance TSL associe
-`(connexion, source_shm) → tsl_index`, et l'état vit sous `(tsl_index, niveau)`. On publie donc
-**une Source IS-07 par (flux, niveau)** — ce qui s'aligne exactement sur les flux MXL déjà exposés
-en BCP-007-03, sans inventer une seconde façon de désigner les mêmes signaux.
+Notre tally est adressé **par FLUX** : l'état vit sous `(flux, niveau)`, et l'index TSL n'existe
+plus qu'au moment de mettre une trame sur le fil. On publie donc **une Source IS-07 par
+(flux, niveau)** — ce qui s'aligne exactement sur les flux MXL déjà exposés en BCP-007-03, sans
+inventer une seconde façon de désigner les mêmes signaux.
+
+QUELS couples sont publiés : ceux qu'un écrivain DÉCLARE adresser, quel qu'il soit — une
+correspondance TSL, une connexion IS-07 entrante, ou un mélangeur qui émet son tally. La version
+précédente ne lisait que la table TSL : un site qui n'en fait pas ne publiait AUCUNE Source, sa
+publication NMOS dépendant ainsi d'un protocole absent de son chemin.
 
 Un niveau est une entité NOMMÉE de `tally_levels` (« Antenne », « Plateau »…), pas un décalage
 dans une trame : on publie son libellé tel que l'exploitant l'a écrit. Les traduire en « program »
@@ -88,39 +93,151 @@ def _fid(shm, niveau):
     return _stable_uuid("is07:flow:%s:%s" % (shm, niveau))
 
 
-def _sources():
-    """[(shm, tsl_index, niveau, nom_niveau)] — un par (flux tallyé, niveau qui l'adresse)."""
+_SRC_TTL_S = 1.0
+_src_cache = {"ts": 0.0, "v": []}
+
+
+def _niveaux_de_projet(pid):
+    from app.database import db_get_tally_levels_of
     try:
-        from app.database import (db_get_tsl_mappings_all, db_get_tsl_connections,
-                                  db_get_tally_levels)
-        mappings = db_get_tsl_mappings_all() or []
-        niveau_de_conn = {c["id"]: c.get("level_uuid") for c in (db_get_tsl_connections() or [])}
+        return list(db_get_tally_levels_of("project", pid) or []) if pid is not None else []
+    except Exception:
+        return []
+
+
+def _paires_tsl():
+    """(flux, niveau) déclarés par la table de correspondance TSL."""
+    from app.database import db_get_tsl_mappings_all, db_get_tsl_connections
+    niv = {c["id"]: c.get("level_uuid") for c in (db_get_tsl_connections() or [])}
+    for m in (db_get_tsl_mappings_all() or []):
+        n = niv.get(m.get("connection_id"))
+        if n:
+            yield (m.get("source_shm") or ""), n
+
+
+def _paires_is07_entrant():
+    """(flux, niveau) déclarés par une connexion IS-07 ENTRANTE.
+
+    ★ Un site qui reçoit son tally en IS-07 et le republie en IS-07 est un cas parfaitement
+    normal — passerelle, ou simple redistribution vers un second contrôleur. Il ne publiait
+    pourtant RIEN, faute d'une table TSL qu'il n'a aucune raison de remplir."""
+    from app.database import db_get_is07_mappings_all, db_get_is07_connections
+    niv = {c["id"]: c.get("level_uuid") for c in (db_get_is07_connections() or [])}
+    for m in (db_get_is07_mappings_all() or []):
+        n = niv.get(m.get("connection_id"))
+        if n:
+            yield (m.get("source_shm") or ""), n
+
+
+def _paires_melangeur():
+    """(flux, niveau) qu'un mélangeur ÉMETTEUR déclare adresser : ses entrées, sur ses niveaux.
+
+    Les entrées vivent dans `deploy_config` (`input_N`), pas dans l'état du conteneur : cette
+    énumération ne demande donc rien au réseau et ne change pas quand une source passe au
+    programme — ce qui est indispensable, une Source IS-04 devant être STABLE. Ce qui varie,
+    c'est la VALEUR publiée, pas l'existence de la Source."""
+    import json as _json
+    from app.database import db_get_containers
+    for ct in (db_get_containers() or []):
+        dc = ct.get("deploy_config")
+        try:
+            dc = _json.loads(dc) if isinstance(dc, str) else (dc or {})
+        except Exception:
+            continue
+        if (dc.get("type") or "") != "mixer":
+            continue
+        params = dc.get("params") or {}
+        if not params.get("tally_emit"):
+            continue
+        niveaux = params.get("tally_level_base") or []
+        if not isinstance(niveaux, list):
+            niveaux = [niveaux]
+        if not niveaux:
+            niveaux = _niveaux_de_projet(ct.get("project_id"))
+        for cle, val in params.items():
+            if not (cle.startswith("input_") and isinstance(val, str) and val):
+                continue
+            if cle.endswith("_fmt"):
+                continue
+            for n in niveaux:
+                if n:
+                    yield val, n
+
+
+def _sources():
+    """[(shm, niveau, nom_niveau)] — un par (flux tallyé, niveau qui l'adresse).
+
+    ★ TOUT ÉCRIVAIN COMPTE, PLUS SEULEMENT TSL. Cette énumération ne lisait que la table de
+    correspondance TSL : un site qui ne fait pas de TSL — tally reçu en IS-07, ou produit par
+    ses propres mélangeurs — ne publiait AUCUNE Source IS-07. Sa publication NMOS dépendait
+    ainsi d'un protocole absent de son chemin, exactement comme l'était sa lecture d'état avant
+    le passage à l'adressage par source.
+
+    On garde en revanche la règle du module, et elle vaut d'être redite : un flux n'a QUE les
+    niveaux que quelqu'un déclare lui adresser. Publier (tous les flux × tous les niveaux)
+    inventerait des Sources qui ne changent jamais, et un contrôleur ne pourrait plus distinguer
+    un signal qu'on ne tallye pas d'un signal éteint.
+
+    Ce qui reste DEHORS, et c'est délibéré : les flux atteints par PROPAGATION. Le tally d'une
+    caméra déduit de la sortie d'un mélangeur est réel, mais sa présence dépend du câblage vivant
+    — publier une Source qui apparaît et disparaît au gré des raccordements ferait osciller le
+    registre IS-04, que les contrôleurs supposent stable. Les entrées du mélangeur, elles, sont
+    déclarées en configuration : c'est pour cela qu'elles y sont, et pas ses amonts.
+
+    Mémorisé une seconde : cette fonction est appelée à chaque publication et à chaque requête
+    IS-04, et elle lit quatre tables."""
+    import time as _t
+    now = _t.monotonic()
+    if now - _src_cache["ts"] <= _SRC_TTL_S:
+        return list(_src_cache["v"])
+    try:
+        from app.database import db_get_tally_levels
+        from app.tally import resolve_ref
         nom_de_niveau = {n["uuid"]: (n.get("nom") or "") for n in (db_get_tally_levels() or [])}
     except Exception as e:
-        log.warning("nmos/is07 : table de correspondance TSL illisible (%s)", e)
+        log.warning("nmos/is07 : niveaux de tally illisibles (%s)", e)
         return []
+
     vus, out = set(), []
-    for m in mappings:
-        shm = m["source_shm"]
-        idx = m["tsl_index"]
-        niveau = niveau_de_conn.get(m.get("connection_id"))
-        if not niveau:
-            continue          # connexion sans niveau : elle n'écrit rien, il n'y a rien à publier
-        # Un même flux peut être mappé sur PLUSIEURS connexions TSL. Sur des niveaux DIFFÉRENTS,
-        # ce sont des signaux différents et on publie les deux ; sur le MÊME niveau, c'est le même
-        # signal, et le publier deux fois ferait voir à un contrôleur des doublons qui changent
-        # ensemble sans qu'il puisse savoir lequel fait foi.
-        if (shm, niveau) in vus:
+    for declarant in (_paires_tsl, _paires_is07_entrant, _paires_melangeur):
+        try:
+            paires = list(declarant())
+        except Exception as e:
+            # ⚠ ON DIT, ON N'AVALE PAS. Un déclarant qui lève ferait disparaître ses Sources du
+            # registre IS-04 — un contrôleur verrait des signaux s'évanouir sans rien pour
+            # l'expliquer. Les autres continuent, et l'absence est tracée.
+            log.warning("nmos/is07 : déclarant %s illisible (%s)", declarant.__name__, e)
             continue
-        vus.add((shm, niveau))
-        out.append((shm, idx, niveau, nom_de_niveau.get(niveau) or "niveau sans nom"))
-    return out
+        for shm, niveau in paires:
+            # ★ RÉSOLUE, comme dans le modèle. Un `port:<id>` publié tel quel donnerait une Source
+            # dont la valeur serait toujours « off » : la clé d'état n'existerait jamais.
+            shm = (resolve_ref((shm or "").strip()) or "").strip()
+            if not shm or not niveau:
+                continue
+            # Un même flux peut être déclaré par PLUSIEURS écrivains. Sur des niveaux DIFFÉRENTS,
+            # ce sont des signaux différents et on publie les deux ; sur le MÊME niveau, c'est le
+            # même signal, et le publier deux fois ferait voir à un contrôleur des doublons qui
+            # changent ensemble sans qu'il puisse savoir lequel fait foi.
+            if (shm, niveau) in vus:
+                continue
+            vus.add((shm, niveau))
+            out.append((shm, niveau, nom_de_niveau.get(niveau) or "niveau sans nom"))
+    # Ordre STABLE : le registre ne doit pas se réordonner d'un tour à l'autre pour rien.
+    out.sort()
+    _src_cache["v"], _src_cache["ts"] = out, now
+    return list(out)
 
 
-def _valeur(tsl_index, niveau):
+def _valeur(shm, niveau):
+    """État de CE flux sur CE niveau.
+
+    ★ Lu par flux, plus par index TSL. Un émetteur IS-07 lisait l'état sous un numéro de trame
+    TSL : le tally d'un signal dépendait donc d'un protocole qui n'était pas dans le chemin, et
+    un site qui ne fait pas de TSL ne publiait rien. Reste une dépendance, dans `_sources()` :
+    c'est encore la table TSL qui décide QUELS flux sont publiés."""
     try:
-        from services import tsl
-        return tsl.get_tally_level(tsl_index, niveau)
+        from app import tally
+        return tally.get_tally_level(shm, niveau)
     except Exception:
         return "off"
 
@@ -168,7 +285,7 @@ def ressources(device_id, version):
     if not actif():
         return {"sources": [], "flows": [], "senders": [], "connection": {}}
     srcs, flows, senders, conn = [], [], [], {}
-    for shm, _idx, niveau, nom in _sources():
+    for shm, niveau, nom in _sources():
         sid, fid = _sid(shm, niveau), _fid(shm, niveau)
         lbl = "Tally %s — %s" % (nom, shm)
         srcs.append({
@@ -445,8 +562,8 @@ def receivers_depuis(senders, device_id, version):
 # ══════════════════════════════════════════════════════════════════════════════════════════════
 
 def _par_id():
-    return {_sid(shm, niveau): (shm, idx, niveau, nom)
-            for shm, idx, niveau, nom in _sources()}
+    return {_sid(shm, niveau): (shm, niveau, nom)
+            for shm, niveau, nom in _sources()}
 
 
 def etat_source(sid):
@@ -454,13 +571,13 @@ def etat_source(sid):
     cible = _par_id().get(sid)
     if not cible:
         return None
-    shm, idx, niveau, _nom = cible
+    shm, niveau, _nom = cible
     horo = _ts()
     return {
         "identity": {"source_id": sid, "flow_id": _fid(shm, niveau)},
         "event_type": TYPE_EVENEMENT,
         "timing": {"creation_timestamp": horo, "origin_timestamp": horo},
-        "payload": {"value": _valeur(idx, niveau)},
+        "payload": {"value": _valeur(shm, niveau)},
         "message_type": "state",
     }
 
@@ -714,11 +831,11 @@ def _veille():
     dernier = {}
     while not _arret.is_set():
         try:
-            from services import tsl
-            tsl._tally_dirty.wait(timeout=0.5)
+            from app import tally
+            tally._tally_dirty.wait(timeout=0.5)
             change = []
-            for sid, (_shm, idx, niveau, _nom) in _par_id().items():
-                v = _valeur(idx, niveau)
+            for sid, (_shm, niveau, _nom) in _par_id().items():
+                v = _valeur(_shm, niveau)
                 if dernier.get(sid) != v:
                     dernier[sid] = v
                     change.append(sid)
