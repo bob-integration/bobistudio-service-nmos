@@ -108,23 +108,14 @@ def _index_de(shm, level_uuid):
 def _shm_du_groupe(rid):
     """Le flux vidéo du groupe de sortie que ce Receiver accompagne, ou None.
 
-    Le tally reçu porte sur le SIGNAL du groupe — pas sur une essence : la vidéo, l'audio et l'ANC
-    d'un même signal partagent son tally. On prend donc le flux vidéo du groupe comme représentant,
-    celui-là même que la correspondance TSL adresse."""
-    from . import _senders, _send_state, GROUPHINT_TAG
-    from .is07 import _rid_recv
-    # ⚠ LE FLUX N'EST PAS DANS LES ÉTIQUETTES. Un Sender IS-04 ne porte pas son nom de shm — il
-    # est dans l'état IS-05 (`_send_state[sid]["shm"]`), qui est le seul endroit où on le range.
-    # Le déduire de l'étiquette de groupe reviendrait à ré-dériver ce que le module tient déjà.
-    for sid, s in list(_senders.items()):
-        for gh in (s.get("tags") or {}).get(GROUPHINT_TAG, []):
-            if _rid_recv(str(gh).split(":", 1)[0]) != rid:
-                continue
-            st = _send_state.get(sid) or {}
-            # La VIDÉO représente le signal : elle, l'audio et l'ANC partagent son tally, et
-            # c'est elle que la correspondance TSL adresse.
-            if st.get("shm") and st.get("essence", "video") == "video":
-                return st["shm"]
+    Une seule résolution dans tout le produit (`is07._flux_du_groupe`) : deux dérivations du même
+    objet finissent par ne plus dire la même chose, et celle-ci décide de ce qu'on expose ET de ce
+    qu'on active."""
+    from . import _senders
+    from .is07 import _groupes_de_sortie, _flux_du_groupe, _rid_recv
+    for groupe, _lbl in _groupes_de_sortie(_senders):
+        if _rid_recv(groupe) == rid:
+            return _flux_du_groupe(groupe, _senders)
     return None
 
 

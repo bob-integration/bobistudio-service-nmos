@@ -264,14 +264,118 @@ def _groupes_de_sortie(senders):
     return sorted(vus.items())
 
 
+MODE_DEFAUT = "adressables"
+
+
+def _flux_du_groupe(groupe, senders):
+    """Le flux MXL VIDÉO de ce groupe de sortie, ou None.
+
+    La vidéo représente le signal : elle, l'audio et l'ANC d'un même groupe partagent son tally,
+    et c'est elle que la correspondance TSL adresse.
+
+    ⚠ `senders` est PASSÉ (le modèle global n'est pas encore publié au moment du rebuild), mais le
+    nom du flux se lit dans `_send_state`, qui est le GLOBAL — la surface MXL l'a rempli juste
+    avant. Les deux sources n'ont pas la même fraîcheur, et c'est voulu : celle qu'on lit ici est
+    la bonne pour chacune."""
+    from . import _send_state, GROUPHINT_TAG
+    for sid, snd in (senders or {}).items():
+        for gh in (snd.get("tags") or {}).get(GROUPHINT_TAG, []):
+            if str(gh).split(":", 1)[0] != groupe:
+                continue
+            st = _send_state.get(sid) or {}
+            if st.get("shm") and st.get("essence", "video") == "video":
+                return st["shm"]
+    return None
+
+
+def _a_un_index(shm):
+    """Ce flux est-il adressable par un tally, chez QUELQU'UN ? (présent dans une correspondance)
+
+    On ne demande pas QUEL porteur : à ce stade aucun niveau n'est affecté, et exiger le bon
+    porteur rendrait tout non adressable avant le premier réglage — donc invisible, donc jamais
+    réglable. Le porteur exact est vérifié à l'ACTIVATION, où le niveau est connu."""
+    if not shm:
+        return False
+    try:
+        from app.database import db_get_tsl_mappings_all
+        from services.tsl import resolve_ref
+        cible = resolve_ref(shm) or shm
+        for m in (db_get_tsl_mappings_all() or []):
+            ref = (m.get("source_shm") or "").strip()
+            if ref and (resolve_ref(ref) or ref) == cible:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def candidats(senders):
+    """Tous les groupes de sortie et ce qu'on peut en faire — exposés ou non.
+
+    ★ C'EST LA LISTE QUE L'EXPLOITANT ARBITRE. Sans elle, on publiait un Receiver par groupe,
+    soit 99 sur ce banc, dont 6 seulement pouvaient recevoir quoi que ce soit : un contrôleur se
+    voyait offrir 93 abonnements qui auraient été refusés. Annoncer une capacité qu'on ne sait pas
+    honorer n'est pas neutre — c'est le contrôleur d'en face qui perd son temps à comprendre.
+
+    Chaque candidat porte SA RAISON de ne pas être adressable : « pas de flux MXL » et « hors
+    correspondance TSL » n'appellent pas la même action, et les confondre en « indisponible »
+    renverrait l'exploitant chercher au mauvais endroit."""
+    out = []
+    for groupe, libelle in _groupes_de_sortie(senders):
+        shm = _flux_du_groupe(groupe, senders)
+        if not shm:
+            adressable, raison = False, "pas de flux MXL"
+        elif not _a_un_index(shm):
+            adressable, raison = False, "hors correspondance TSL"
+        else:
+            adressable, raison = True, ""
+        out.append({"groupe": groupe, "libelle": libelle, "id": _rid_recv(groupe),
+                    "shm": shm, "adressable": adressable, "raison": raison})
+    return out
+
+
+def mode_exposition():
+    """`adressables` (défaut) · `toutes` · `choisies`."""
+    from . import _setting
+    m = str(_setting("is07_expose_mode", MODE_DEFAUT) or MODE_DEFAUT).strip().lower()
+    return m if m in ("adressables", "toutes", "choisies") else MODE_DEFAUT
+
+
+def groupes_choisis():
+    from . import _setting
+    v = _setting("is07_expose", None)
+    return set(v) if isinstance(v, list) else set()
+
+
+def exposes(senders):
+    """Les candidats réellement publiés, selon le mode.
+
+    ★ `adressables` PAR DÉFAUT, et c'est le choix sûr : on n'annonce que ce qu'on sait honorer.
+    `toutes` reste possible pour qui veut exposer d'avance (un contrôleur peut alors activer une
+    sortie qu'on ne saura pas servir — c'est un choix, il doit être explicite). `choisies` donne
+    la main entière.
+
+    ⚠ RETIRER UNE SORTIE DE L'EXPOSITION LA FAIT DISPARAÎTRE d'IS-04 : un contrôleur qui l'avait
+    activée verra sa ressource s'évanouir, pas se désactiver. C'est le comportement correct — nous
+    ne la servons plus — mais ce n'est pas un geste anodin, et l'interface doit le dire."""
+    tous = candidats(senders)
+    mode = mode_exposition()
+    if mode == "toutes":
+        return tous
+    if mode == "choisies":
+        choisis = groupes_choisis()
+        return [c for c in tous if c["groupe"] in choisis]
+    return [c for c in tous if c["adressable"]]
+
+
 def receivers_depuis(senders, device_id, version):
-    """{"receivers": [...], "connection": {...}} — un Receiver de tally par groupe de sortie."""
+    """{"receivers": [...], "connection": {...}} — un Receiver de tally par groupe EXPOSÉ."""
     if not actif():
         return {"receivers": [], "connection": {}}
     from . import _primary_iface
     recs, conn = [], {}
-    for groupe, libelle in _groupes_de_sortie(senders):
-        rid = _rid_recv(groupe)
+    for _c in exposes(senders):
+        groupe, libelle, rid = _c["groupe"], _c["libelle"], _c["id"]
         recs.append({
             "id": rid, "version": version,
             "label": "%s — tally" % libelle,
