@@ -39,7 +39,16 @@ from flask import Blueprint, jsonify, request, abort
 log = logging.getLogger(__name__)
 
 IS04_VERSION = "v1.3"
-IS05_VERSION = "v1.1"
+# ⚠ BCP-007-03 EXIGE IS-05 v1.2 (« Nodes compliant with this specification MUST implement IS-05
+# v1.2 or higher »), et ce n'est pas une formalité de numéro : en v1.1, `sender_transport_params`
+# est un `anyOf` FERMÉ sur rtp/dash/websocket/mqtt — nos paramètres MXL y sont INVALIDES (vérifié
+# par validation croisée contre les schémas des deux versions). La v1.2 remplace l'énumération par
+# un motif ouvert, adossé au registre des transports.
+#
+# On sert les DEUX : un contrôleur 2110 épinglé sur v1.1 continue de fonctionner, c'est le chemin
+# de production. La PREMIÈRE de la liste est celle qu'on met en avant.
+IS05_VERSIONS = ("v1.2", "v1.1")
+IS05_VERSION = IS05_VERSIONS[0]
 HEARTBEAT_S = 5.0
 # Période du FILET de reconstruction (cf. _register_loop) : assez rare pour être gratuite,
 # assez fréquente pour qu'une notification oubliée ne laisse pas le modèle périmé longtemps.
@@ -67,6 +76,39 @@ _CORS_ENTETES = "Content-Type, Accept, Authorization"
 
 def _est_nmos(chemin):
     return (chemin or "").startswith("/x-nmos/")
+
+
+def installer_alias_is05(app):
+    """Sert les versions IS-05 SECONDAIRES aux mêmes URL que la principale.
+
+    Les 24 routes IS-05 sont décorées à partir de `IS05_VERSION` — les dupliquer version par
+    version voudrait dire 24 décorateurs de plus, ou une signature de vue changée partout pour
+    recevoir le segment de version. On réécrit donc le chemin AVANT le routage, au niveau WSGI :
+    `/x-nmos/connection/v1.1/…` est servi par la route `v1.2`.
+
+    ⚠ C'est un ALIAS, pas une émulation : le corps rendu est le même pour les deux versions. Pour
+    les ressources RTP c'est exact — la v1.2 n'a rien changé aux charges utiles, seulement élargi
+    la validation (`anyOf` fermé sur quatre transports → motif ouvert). Pour les ressources MXL,
+    un client v1.1 reçoit des paramètres que le schéma de SA version rejette : c'est déjà le cas
+    aujourd'hui, et c'est pourquoi le Device du bus MXL n'annonce, lui, que la v1.2.
+
+    Rien ne régresse donc pour un contrôleur existant : il recevait ces octets hier, il les
+    reçoit encore."""
+    principale = "/x-nmos/connection/%s/" % IS05_VERSION
+    alias = tuple("/x-nmos/connection/%s/" % v for v in IS05_VERSIONS[1:])
+    if not alias:
+        return
+    interne = app.wsgi_app
+
+    def _reecrire(environ, start_response):
+        chemin = environ.get("PATH_INFO") or ""
+        for a in alias:
+            if chemin.startswith(a):
+                environ["PATH_INFO"] = principale + chemin[len(a):]
+                break
+        return interne(environ, start_response)
+
+    app.wsgi_app = _reecrire
 
 
 def installer_cors(app):
@@ -366,15 +408,38 @@ def _audio_constraint_sets(media_type="audio/L24"):
     }]
 
 
+def _data_constraint_sets(media_type="video/smpte291"):
+    """Constraint Set des données auxiliaires (ANC).
+
+    ⚠ CORRIGÉ le 2026-09-09. On n'en annonçait AUCUN, au motif — écrit ici — que « le format data
+    n'a pas de contrainte exprimable dans le registre des capacités » et qu'un Constraint Set
+    réduit au média n'apprendrait rien à personne. Deux choses ont montré que c'était faux :
+
+    - BCP-007-03 en fait un **MUST** pour tout Receiver MXL (« The Receiver MUST use the
+      `constraint_sets` parameter within the `caps` object ») — 70 de nos receivers ANC y
+      manquaient ;
+    - `urn:x-nmos:cap:format:media_type` est une contrainte **GÉNÉRALE** du registre, applicable à
+      n'importe quel format (« Identifies streams which may be created or consumed based upon
+      their IANA media type »), pas une contrainte vidéo.
+
+    Et surtout ce n'est pas la même information que `caps.media_types` POUR UN CONTRÔLEUR : la
+    procédure de compatibilité de BCP-004-01 travaille sur les `constraint_sets`. Un receiver qui
+    n'en déclare aucun est traité comme n'ayant pas déclaré ses capacités — le contrôleur ne peut
+    rien confirmer avant de câbler, ce qui est exactement ce que la BCP veut éviter.
+
+    `event_type` n'est PAS annoncé : il désigne les flux d'événements IS-07, pas l'ANC."""
+    return [{
+        f"{_CAP}meta:label":        "ST 2110-40 — données auxiliaires",
+        f"{_CAP}format:media_type": {"enum": [media_type]},
+    }]
+
+
 def _receiver_caps(fmt, media_types, version=None):
     """`caps` d'un receiver — avec `constraint_sets` + `version` quand on a quelque chose de VRAI
-    à déclarer (BCP-004-01 exige les deux ensemble, jamais l'un sans l'autre).
-
-    Le format `data` (ANC, `video/smpte291`) n'a pas de contrainte exprimable dans le registre des
-    capacités : on s'en tient à `media_types`, plutôt que d'inventer un Constraint Set vide qui
-    n'apprendrait rien à personne."""
+    à déclarer (BCP-004-01 exige les deux ensemble, jamais l'un sans l'autre)."""
     caps = {"media_types": media_types}
-    sets = {"video": _video_constraint_sets, "audio": _audio_constraint_sets}.get(fmt)
+    sets = {"video": _video_constraint_sets, "audio": _audio_constraint_sets,
+            "data": _data_constraint_sets}.get(fmt)
     sets = sets(media_types[0]) if sets else []
     if sets:
         caps["constraint_sets"] = sets
@@ -605,14 +670,18 @@ def _asset_tags(avec_fonction=False, base=None, deploiement=False):
     return tags
 
 
-def _controls():
+def _controls(is05_versions=None):
     """Tableau `controls` d'un Device IS-04 : la Connection API IS-05, plus le point d'accès
     IS-12 quand il tourne. C'est par là — et seulement par là — qu'un contrôleur découvre le
-    protocole de contrôle (IS-12 §« IS-04 interactions »)."""
+    protocole de contrôle (IS-12 §« IS-04 interactions »).
+
+    `is05_versions` restreint les versions annoncées. Le Device du bus MXL n'annonce QUE la v1.2 :
+    annoncer la v1.1 inviterait un contrôleur à lire des `transport_params` que le schéma de CETTE
+    version déclare invalides — on lui tendrait un piège. Le Device 2110 les annonce toutes."""
     ctrl = [{
-        "href": f"http://{_get_host_address()}:5000/x-nmos/connection/{IS05_VERSION}/",
-        "type": f"urn:x-nmos:control:sr-ctrl/{IS05_VERSION}",
-    }]
+        "href": f"http://{_get_host_address()}:5000/x-nmos/connection/{v}/",
+        "type": f"urn:x-nmos:control:sr-ctrl/{v}",
+    } for v in (is05_versions or IS05_VERSIONS)]
     try:
         from . import is12
         if is12.actif():
@@ -1650,7 +1719,7 @@ def is04_v_root():
 
 @bp.route("/x-nmos/connection/", methods=["GET"])
 def is05_root():
-    return jsonify([f"{IS05_VERSION}/"])
+    return jsonify([f"{v}/" for v in IS05_VERSIONS])
 
 @bp.route(f"/x-nmos/connection/{IS05_VERSION}/", methods=["GET"])
 def is05_v_root():
@@ -1672,7 +1741,8 @@ def is05_recv_list():
 @bp.route(f"/x-nmos/connection/{IS05_VERSION}/single/receivers/<rid>", methods=["GET"])
 def is05_recv_endpoints(rid):
     if rid not in _receivers: abort(404)
-    return jsonify(["constraints/", "staged/", "active/", "transportfile/"])
+    return jsonify(["constraints/", "staged/", "active/", "transportfile/",
+                    "transporttype/"])
 
 @bp.route(f"/x-nmos/connection/{IS05_VERSION}/single/receivers/<rid>/constraints", methods=["GET"])
 def is05_recv_constraints(rid):
@@ -2074,7 +2144,8 @@ def is05_send_list():
 @bp.route(f"/x-nmos/connection/{IS05_VERSION}/single/senders/<sid>", methods=["GET"])
 def is05_send_endpoints(sid):
     if sid not in _senders: abort(404)
-    return jsonify(["constraints/", "staged/", "active/", "transportfile/"])
+    return jsonify(["constraints/", "staged/", "active/", "transportfile/",
+                    "transporttype/"])
 
 @bp.route(f"/x-nmos/connection/{IS05_VERSION}/single/senders/<sid>/constraints", methods=["GET"])
 def is05_send_constraints(sid):
@@ -2096,6 +2167,32 @@ def is05_send_active_get(sid):
     if sid not in _senders: abort(404)
     with _lock:
         return jsonify(_send_state[sid]["active"])
+
+def _type_de_transport(t):
+    """URN de transport « de base » : sous-classifications et version retirées.
+
+    IS-05 le veut ainsi (`transporttype-response-schema.json` : « with any subclassifications or
+    versions removed ») — un sender en `urn:x-nmos:transport:rtp.mcast` répond
+    `urn:x-nmos:transport:rtp`. Rendre l'URN complet ferait échouer la validation du contrôleur
+    sur un point qui n'a rien à voir avec notre routage."""
+    t = t or ""
+    base = t.split("/")[0]          # retire une éventuelle version
+    return base.split(".")[0]       # retire la sous-classification (.mcast / .ucast)
+
+
+@bp.route(f"/x-nmos/connection/{IS05_VERSION}/single/senders/<sid>/transporttype", methods=["GET"])
+def is05_send_transporttype(sid):
+    if sid not in _senders: abort(404)
+    with _lock:
+        return jsonify(_type_de_transport(_senders[sid].get("transport")))
+
+
+@bp.route(f"/x-nmos/connection/{IS05_VERSION}/single/receivers/<rid>/transporttype", methods=["GET"])
+def is05_recv_transporttype(rid):
+    if rid not in _receivers: abort(404)
+    with _lock:
+        return jsonify(_type_de_transport(_receivers[rid].get("transport")))
+
 
 @bp.route(f"/x-nmos/connection/{IS05_VERSION}/single/senders/<sid>/transportfile", methods=["GET"])
 def is05_send_transportfile(sid):

@@ -401,6 +401,9 @@ def _clone(d):
 # Construction du modèle (appelée par `rebuild_model`)
 # ══════════════════════════════════════════════════════════════════════════════════════════════
 
+IS05_V12 = "v1.2"          # version minimale exigée par BCP-007-03 § « Connection Management »
+
+
 def _label():
     from . import _setting
     return _setting("nmos_mxl_label", "Bobi.Studio — bus MXL")
@@ -430,8 +433,11 @@ def device_resource(did, version):
         "senders": [],
         "receivers": [],
         # Le MXL reste listé en IS-05 : le contrôleur doit pouvoir lire l'état d'abonnement, et
-        # le chemin d'écriture s'ouvrira par `nmos_mxl_ecriture`. Il annonce donc le même control.
-        "controls": _controls(),
+        # le chemin d'écriture s'ouvrira par `nmos_mxl_ecriture`. Mais UNIQUEMENT en v1.2 :
+        # BCP-007-03 l'exige, et surtout le schéma v1.1 de `transport_params` est un `anyOf`
+        # FERMÉ sur rtp/dash/websocket/mqtt — nos paramètres MXL y sont invalides. Annoncer la
+        # v1.1 ici inviterait un contrôleur à lire ce que sa propre version lui fait rejeter.
+        "controls": _controls(is05_versions=(IS05_V12,)),
     }
 
 

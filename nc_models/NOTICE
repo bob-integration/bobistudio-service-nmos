@@ -30,3 +30,28 @@ ces fichiers : le modèle publié et le comportement réel ne peuvent pas diverg
 
 Mise à jour : re-cloner les dépôts amont et régénérer les bundles (concaténation triée de
 models/classes/*.json et models/datatypes/*.json, plus les primitifs pour MS-05-02).
+
+Schémas JSON AMWA repris verbatim (dossier `schemas/`)
+======================================================
+
+Ajoutés le 2026-09-09 pour que le banc de conformité tourne HORS LIGNE, en CI, sans cloner les
+dépôts amont. Recopie verbatim, aucun champ modifié :
+
+  schemas/bcp-007-03/    AMWA BCP-007-03 « NMOS Support for MXL », tag v1.0.0
+                         https://github.com/AMWA-TV/bcp-007-03
+                         commit 76763d5687ccf666ff2e34a908a3ee59c32a8f6f
+                         (transport_params MXL sender/receiver + leurs `ext` et `mxl_uuid`,
+                          définition de domaine, schémas de contraintes)
+
+  schemas/is-05-v1.2/    AMWA IS-05 « Device Connection Management », tag v1.2.0
+                         https://github.com/AMWA-TV/is-05
+                         commit 354c183f7f36554412f69c4a7152fec672a21e01
+                         (transport_params génériques, contraintes, réponse transporttype)
+
+POURQUOI la v1.2 et pas la v1.1 : BCP-007-03 exige IS-05 v1.2 ou supérieur, et ce n'est pas une
+formalité de numéro. En v1.1, `sender_transport_params.json` est un `anyOf` FERMÉ sur
+rtp/dash/websocket/mqtt : nos paramètres MXL y sont INVALIDES. La v1.2 remplace l'énumération par
+un motif ouvert adossé au registre des transports. Garder les deux jeux de schémas côte à côte
+n'apporterait rien — c'est la v1.2 qui fait foi pour nous.
+
+Licence amont : Apache License 2.0, © AMWA. Compatible GPLv3, comme les bundles ci-dessus.
