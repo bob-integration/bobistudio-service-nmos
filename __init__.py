@@ -94,6 +94,9 @@ def installer_alias_is05(app):
 
     Rien ne régresse donc pour un contrôleur existant : il recevait ces octets hier, il les
     reçoit encore."""
+    if getattr(app, "_nmos_alias_is05", False):
+        return                      # idempotent : posé au plus une fois par application
+    app._nmos_alias_is05 = True
     principale = "/x-nmos/connection/%s/" % IS05_VERSION
     alias = tuple("/x-nmos/connection/%s/" % v for v in IS05_VERSIONS[1:])
     if not alias:
@@ -109,6 +112,9 @@ def installer_alias_is05(app):
         return interne(environ, start_response)
 
     app.wsgi_app = _reecrire
+
+
+bp.record_once(lambda etat: installer_alias_is05(etat.app))
 
 
 def installer_cors(app):
