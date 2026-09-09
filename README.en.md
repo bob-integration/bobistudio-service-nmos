@@ -18,7 +18,7 @@ declares about itself.
 | Specification | What it brings | Where |
 |---|---|---|
 | **IS-04** | Registration and discovery: Node, Devices, Senders, Receivers, plus DNS-SD discovery of the host facility's registry | `registre.py`, `decouverte.py`, `conteneur_node.py` |
-| **IS-05** | Connection: activating a Receiver onto a Sender, SDP, immediate or scheduled activation | `registre.py` |
+| **IS-05** | Connection: activating a Receiver onto a Sender, SDP, immediate or scheduled activation. **Both v1.2 and v1.1** are served | `registre.py` |
 | **IS-07** | Events and tally, both ways — we publish ours, and we consume a third party's | `is07.py`, `is07_client.py`, `is07_entrant.py` |
 | **IS-09** | System Parameters: the facility's global constants | `is09.py` |
 | **IS-12** | MS-05-02 control over WebSocket (dedicated port 5010) | `is12.py`, `ncp.py`, `modele.py` |
@@ -27,6 +27,21 @@ declares about itself.
 Plus the **BCPs**: `002-01` (grouping, frozen at registration), `002-02` (asset identity),
 `003-02` (authorization), `004-01` (receiver capabilities), `008-01` and `008-02` (Receiver
 and Sender health monitors), `007-03` (exposing the MXL bus through IS-04/05).
+
+**BCP-007-03 "NMOS Support for MXL", v1.0.0**: the internal bus is published under its own
+Device, separate from the ST 2110 I/O — two surfaces, two transports, two routing authorities.
+Conformance is not asserted but **checked**: `tests/verif_nmos_bcp00703.py` validates the
+resources actually served against the specification's own JSON schemas, vendored under
+`nc_models/schemas/`. Two gaps are deliberate and documented — `video/x-mxl-planar` is not in the
+media types register (an internal bus choice, measured), and IS-05 writes onto the MXL surface
+remain closed, cabling going through the orchestrator.
+
+**IS-05 v1.2 is required by BCP-007-03, and it is not just a number.** In v1.1,
+`sender_transport_params.json` is a CLOSED `anyOf` over rtp/dash/websocket/mqtt: MXL parameters
+are invalid against it, and a strict Controller rejects the resource. Both versions are served —
+`/x-nmos/connection/` advertises `["v1.2/", "v1.1/"]` — so as not to cut off an ST 2110
+Controller pinned to v1.1. The MXL bus Device advertises v1.2 only: advertising v1.1 there would
+invite a Controller to read what its own version makes it reject.
 
 **The control model is shared.** `modele.py` holds the live MS-05-02 model with a reference
 count; IS-12 and IS-14 are only two transports onto it. A property written through one is
@@ -57,6 +72,10 @@ specification as-is.
 
 Four measurement programs, run by hand against a live instance — they do not run in
 continuous integration, deliberately: they need a real registry and real containers.
+
+Two further benches run **offline** and in continuous integration, on the orchestrator side:
+`tests/verif_nmos_bcp00703.py` (BCP-007-03 conformance, by schema validation) and
+`tests/verif_nmos_surfaces_separees.py` (the MXL bus and ST 2110 on two Devices).
 
 ```bash
 python3 is12_bench.py          # the WebSocket transport and the control model

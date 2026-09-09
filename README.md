@@ -17,7 +17,7 @@ ce qu'un appareil tiers déclare.
 | Spécification | Ce qu'elle apporte | Où |
 |---|---|---|
 | **IS-04** | Enregistrement et découverte : Node, Devices, Senders, Receivers, plus la découverte DNS-SD du registre de l'installation d'accueil | `registre.py`, `decouverte.py`, `conteneur_node.py` |
-| **IS-05** | Connexion : activation d'un Receiver sur un Sender, SDP, activation immédiate ou programmée | `registre.py` |
+| **IS-05** | Connexion : activation d'un Receiver sur un Sender, SDP, activation immédiate ou programmée. **v1.2 et v1.1** servies toutes deux | `registre.py` |
 | **IS-07** | Événements et tally, dans les deux sens — nous publions les nôtres, et nous consommons ceux d'un appareil tiers | `is07.py`, `is07_client.py`, `is07_entrant.py` |
 | **IS-09** | System Parameters : les constantes globales de l'installation | `is09.py` |
 | **IS-12** | Contrôle MS-05-02 sur WebSocket (port dédié 5010) | `is12.py`, `ncp.py`, `modele.py` |
@@ -26,6 +26,21 @@ ce qu'un appareil tiers déclare.
 Plus les **BCP** : `002-01` (grouping, figé au registre), `002-02` (identité d'asset),
 `003-02` (autorisation), `004-01` (capacités de récepteur), `008-01` et `008-02`
 (moniteurs de santé des Receivers et Senders), `007-03` (exposition du bus MXL en IS-04/05).
+
+**BCP-007-03 « NMOS Support for MXL », v1.0.0** : le bus interne est publié sous son propre
+Device, distinct de l'I/O ST 2110 — deux surfaces, deux transports, deux autorités de routage.
+La conformité n'est pas affirmée mais **vérifiée** : `tests/verif_nmos_bcp00703.py` valide les
+ressources réellement servies contre les schémas JSON de la spécification, vendorisés dans
+`nc_models/schemas/`. Deux écarts sont assumés et documentés — `video/x-mxl-planar` n'est pas au
+registre des types de média (choix de bus interne, mesuré), et l'écriture IS-05 sur la surface
+MXL reste fermée, le câblage passant par l'orchestrateur.
+
+**IS-05 v1.2 est requis par BCP-007-03, et ce n'est pas un numéro.** En v1.1,
+`sender_transport_params.json` est un `anyOf` FERMÉ sur rtp/dash/websocket/mqtt : des paramètres
+MXL y sont invalides, et un contrôleur strict rejette la ressource. Les deux versions sont
+servies — `/x-nmos/connection/` annonce `["v1.2/", "v1.1/"]` — pour ne pas couper un contrôleur
+ST 2110 épinglé sur la v1.1. Le Device du bus MXL n'annonce, lui, que la v1.2 : l'annoncer en
+v1.1 inviterait un contrôleur à lire ce que sa propre version lui fait rejeter.
 
 **Le modèle de contrôle est partagé.** `modele.py` porte le modèle vivant MS-05-02, avec un
 compteur de références ; IS-12 et IS-14 n'en sont que deux transports. Une propriété écrite
@@ -65,6 +80,10 @@ python3 is14_bench.py          # le transport REST et bulkProperties
 python3 bench_telemetrie.py    # les moniteurs BCP-008
 python3 bench_bcp002.py        # grouping et identité d'asset
 ```
+
+Côté orchestrateur, deux bancs tournent **hors ligne** et en intégration continue :
+`tests/verif_nmos_bcp00703.py` (conformité BCP-007-03, par validation de schéma) et
+`tests/verif_nmos_surfaces_separees.py` (le bus MXL et le ST 2110 sur deux Devices).
 
 `client_is12.py` et `client_ncp.py` sont des clients autonomes : ils servent à interroger un
 appareil TIERS, pas le nôtre — utile pour vérifier ce qu'un équipement annonce réellement,
