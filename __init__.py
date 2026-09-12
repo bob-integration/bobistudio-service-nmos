@@ -254,6 +254,29 @@ def _empty_sender_staged(mcast_ip, port, leg1=None):
     }
 
 
+def _noeud_appaire(node_id):
+    """Le nœud déclare-t-il au moins une paire red/blue sur ses interfaces média ?"""
+    try:
+        from app.allocations import interface_appairee
+        from app.database import db_get_node_interfaces
+        for r in (db_get_node_interfaces(node_id) or []):
+            if (r.get("role") or "") == "media2110" and interface_appairee(node_id, r.get("ifname")):
+                return True
+    except Exception as e:
+        log.debug("_noeud_appaire(%s): %s", node_id, e)
+    return False
+
+
+def _slot_redondant(node_id, params, slot_i):
+    """Le slot TX sort-il par une interface appairée ? (défensif : faux si indéterminable)"""
+    try:
+        from app.allocations import slot_redondant
+        return bool(slot_redondant(node_id, params or {}, slot_i))
+    except Exception as e:
+        log.debug("_slot_redondant(%s, %s): %s", node_id, slot_i, e)
+        return False
+
+
 def _build_source_resource(sid, did, vmid, label, version):
     return {
         "id": sid,
@@ -1103,7 +1126,12 @@ def rebuild_model():
         _atc = dc_params.get("active_tx_count")
         n_tx_active = min(int(_atc if _atc is not None else len(tx_slots_full)), len(tx_slots_full)) if is_sender else 0
         tx_slots = tx_slots_full[:n_tx_active]
-        smpte_2022_7 = bool(dc_params.get("smpte_2022_7")) if is_receiver else False
+        # ★ La redondance ne vient plus d'un booléen du moteur mais de l'APPARIEMENT DÉCLARÉ des
+        # interfaces média du nœud (page Interfaces, red/blue). Déclarer une paire est déjà
+        # l'expression de l'intention ; un second réglage ne servait qu'à laisser deux vérités
+        # diverger. Côté réception, deux jambes sont une CAPACITÉ : le récepteur sait en accepter
+        # deux dès lors qu'une paire existe, l'activation IS-05 fournissant les adresses.
+        smpte_2022_7 = bool(is_receiver and _noeud_appaire(c.get("node_id")))
         n_legs = 2 if smpte_2022_7 else 1
         # Container exposé en NMOS s'il a au moins un receiver ou sender
         if (n_video + n_audio + n_data) <= 0 and not has_video_send and n_audio_send <= 0 and not tx_slots:
@@ -1305,7 +1333,8 @@ def rebuild_model():
             # + ANC d'un même slot partagent le group_name, le rôle = essence.
             _set_grouphint(new_senders[snd_id], f"{base} Tx {tx_idx + 1:02d}", "video")
             new_devices[did]["senders"].append(snd_id)
-            smpte_v = bool(tslot.get("smpte_2022_7") or dc_params.get("smpte_2022_7"))
+            smpte_v = bool(tslot.get("smpte_2022_7")) or _slot_redondant(
+                c.get("node_id"), dc_params, tx_idx)
             mcast1_v = tslot.get("multicast_ip_leg1")
             port1_v  = tslot.get("dest_port_leg1")
             leg1_v   = (mcast1_v, port1_v) if (smpte_v and mcast1_v and port1_v) else None
@@ -1392,7 +1421,8 @@ def rebuild_model():
                 new_senders[snd_id] = _build_sender_resource(snd_id, did, fid, vmid, label, version)
                 _set_grouphint(new_senders[snd_id], f"{base} Tx {tx_idx + 1:02d}", f"audio {ai + 1:02d}")
                 new_devices[did]["senders"].append(snd_id)
-                smpte_a = bool(tslot.get("smpte_2022_7") or dc_params.get("smpte_2022_7"))
+                smpte_a = bool(tslot.get("smpte_2022_7")) or _slot_redondant(
+                    c.get("node_id"), dc_params, tx_idx)
                 mcast1_a = acfg.get("multicast_ip_leg1")
                 port1_a  = acfg.get("dest_port_leg1")
                 leg1_a   = (mcast1_a, port1_a) if (smpte_a and mcast1_a and port1_a) else None
@@ -1435,7 +1465,8 @@ def rebuild_model():
             new_senders[snd_id] = _build_sender_resource(snd_id, did, fid, vmid, label, version)
             _set_grouphint(new_senders[snd_id], f"{base} Tx {tx_idx + 1:02d}", "anc")
             new_devices[did]["senders"].append(snd_id)
-            smpte_d = bool(tslot.get("smpte_2022_7") or dc_params.get("smpte_2022_7"))
+            smpte_d = bool(tslot.get("smpte_2022_7")) or _slot_redondant(
+                c.get("node_id"), dc_params, tx_idx)
             mcast1_d = tslot.get("anc_multicast_ip_leg1")
             port1_d  = tslot.get("anc_dest_port_leg1")
             leg1_d   = (mcast1_d, port1_d) if (smpte_d and mcast1_d and port1_d) else None
