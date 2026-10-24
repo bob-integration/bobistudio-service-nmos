@@ -2810,6 +2810,64 @@ def nb_sessions_rx_attendues(vmid, essence="video"):
                if (st.get("essence") or "video") == essence)
 
 
+def _transport_is_mxl(active):
+    """True si l'abonnement porte un transport MXL (bus interne) et non RTP/ST 2110.
+
+    ⚠ POURQUOI CE FILTRE EXISTE. `/nmos/subscribe` est le contrat de l'agent du moteur 2110 :
+    il n'écrit un fichier SDP que si `enabled ET sdp` (plugins/2110_io/docker/controller.py),
+    et il ne sait rien faire d'autre. Or un receiver dont le transport est MXL n'a PAS de SDP —
+    le SDP est un artefact de RTP, pas une donnée manquante : son `transport_params` porte
+    `mxl_domain_id` / `mxl_flow_id`, et son entrée est câblée par la page Câbles (`_apply_wire`),
+    jamais par IS-05.
+
+    Les pousser là ne pouvait donc qu'échouer. Mesuré le 2026-10-24 sur 33 abonnements persistés :
+    29 MXL sans SDP, 4 RTP avec SDP, corrélation PARFAITE — et 29 alertes `error` à chaque
+    démarrage depuis le 2026-10-21 annonçant « le moteur tourne SANS ces entrées », alors que le
+    multiview 1187, qui en portait 11, tournait à 50,3 fps avec un lag d'entrée de 0.
+    """
+    for tp in (active or {}).get("transport_params") or []:
+        if isinstance(tp, dict) and ("mxl_flow_id" in tp or "mxl_domain_id" in tp):
+            return True
+    return False
+
+
+def _purge_orphan_subscriptions(subs):
+    """Retire les abonnements persistés dont le vmid n'existe plus dans `containers`, et réécrit
+    le réglage. Rend le dict purgé.
+
+    Rien ne nettoyait cette persistance : un conteneur détruit y laissait son abonnement pour
+    toujours, et il produisait une erreur à chaque démarrage (constaté pour le vmid 1105, absent
+    de `containers`). Les vmid étant RÉATTRIBUÉS (handle local jetable), un orphelin ne fait pas
+    que du bruit : il pourrait un jour viser un conteneur qui n'a rien demandé.
+
+    ⚠ ÉCHOUE FERMÉ : si la liste des conteneurs ne peut pas être lue, ou si elle est VIDE, on ne
+    purge RIEN. Une base momentanément illisible effacerait sinon tous les abonnements du parc —
+    le remède serait pire que le mal.
+    """
+    import json as _json
+    try:
+        from app.database import db_get_containers, db_set_setting
+        vivants = {c["vmid"] for c in db_get_containers() or []}
+    except Exception as e:
+        log.warning(f"nmos: purge des abonnements orphelins impossible (containers illisible) : {e}")
+        return subs
+    if not vivants:
+        return subs
+    orphelins = [rid for rid, info in subs.items() if (info or {}).get("vmid") not in vivants]
+    if not orphelins:
+        return subs
+    restants = {rid: info for rid, info in subs.items() if rid not in orphelins}
+    detail = ", ".join(sorted({str((subs[rid] or {}).get("vmid")) for rid in orphelins}))
+    try:
+        db_set_setting("nmos_subscriptions", _json.dumps(restants))
+        log.info("nmos: %d persisted RX subscription(s) dropped — container gone (vmid %s)",
+                 len(orphelins), detail)
+    except Exception as e:
+        log.warning(f"nmos: purge des abonnements orphelins non enregistrée : {e}")
+        return subs
+    return restants
+
+
 def repush_subscriptions(vmid):
     """Re-pousse vers le contrôleur (:8081/nmos/subscribe) TOUS les abonnements RX ACTIFS du
     container `vmid`. Appelé après une (re)création du conteneur : ses fichiers SDP repartent de
@@ -2847,9 +2905,17 @@ def repush_subscriptions(vmid):
         return 0
     n = 0
     echecs = []
+    mxl = []            # transport MXL : `/nmos/subscribe` ne les sert pas (cf. _transport_is_mxl)
     entries = subscriptions_actives(vmid)
     for rid, state in entries:
         active = state.get("active") or {}
+        # ── FILTRE DE TRANSPORT, AVANT TOUT ENVOI ────────────────────────────────────────────
+        # Un receiver MXL n'a pas de SDP par nature : le pousser déclenchait le refus ci-dessous
+        # et une alerte `error` disant que le moteur tourne sans ses entrées — alors qu'elles
+        # sont câblées ailleurs et qu'elles fonctionnent. On l'écarte ici, sans alerte.
+        if _transport_is_mxl(active):
+            mxl.append("#%s/%s" % (state["recv_idx"] + 1, state.get("essence", "video")))
+            continue
         sdp = (active.get("transport_file") or {}).get("data")
         dual = len(active.get("transport_params") or []) >= 2
         mcast_info = _extract_mcast_info(active, smpte_2022_7=dual)
@@ -2858,17 +2924,23 @@ def repush_subscriptions(vmid):
             n += 1
         else:
             echecs.append("#%s/%s%s" % (state["recv_idx"] + 1, _ess, "" if sdp else " (sans SDP)"))
+    # Les ratios portent sur les abonnements RÉELLEMENT poussés : compter les MXL écartés au
+    # dénominateur ferait lire « 4/11 » là où 4 sur 4 sont arrivés.
+    pousses = len(entries) - len(mxl)
+    if mxl:
+        log.info("nmos: %d MXL receiver(s) on container %s left to the cable layer (no SDP by "
+                 "design): %s", len(mxl), vmid, ", ".join(mxl))
     if echecs:
         # Une restauration partielle est une PANNE, pas un détail : le moteur redémarre sans les
         # entrées qu'on croyait rétablies, et plus rien ne le signale ensuite.
         from app.database import db_add_alert
         log.error("nmos: %d/%d abonnement(s) NON restauré(s) sur container %s : %s",
-                  len(echecs), len(entries), vmid, ", ".join(echecs))
-        db_add_alert(f"NMOS {vmid} : {len(echecs)}/{len(entries)} abonnement(s) RX NON restauré(s) "
+                  len(echecs), pousses, vmid, ", ".join(echecs))
+        db_add_alert(f"NMOS {vmid} : {len(echecs)}/{pousses} abonnement(s) RX NON restauré(s) "
                      f"({', '.join(echecs[:6])}) — le moteur tourne SANS ces entrées",
                      "error", vmid=vmid, kind="rx_stall")
     if n:
-        log.info(f"nmos: {n}/{len(entries)} abonnement(s) RX livré(s) sur container {vmid} après (re)déploiement")
+        log.info(f"nmos: {n}/{pousses} abonnement(s) RX livré(s) sur container {vmid} après (re)déploiement")
     return n
 
 
@@ -2901,6 +2973,7 @@ def _restore_persisted_subscriptions():
         subs = _json.loads(raw) if raw else {}
     except Exception:
         subs = {}
+    subs = _purge_orphan_subscriptions(subs)
     vmids = set()
     vid_fmts = []   # (vmid, recv_idx, sdp) des flux VIDÉO actifs → repropager le format PAR-FLUX
     act_calls = []  # (vmid, recv_idx, sdp) tous essences → réactivation IS-05 best-effort au boot
