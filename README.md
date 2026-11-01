@@ -16,16 +16,21 @@ ce qu'un appareil tiers déclare.
 
 | Spécification | Ce qu'elle apporte | Où |
 |---|---|---|
-| **IS-04** | Enregistrement et découverte : Node, Devices, Senders, Receivers, plus la découverte DNS-SD du registre de l'installation d'accueil | `registre.py`, `decouverte.py`, `conteneur_node.py` |
-| **IS-05** | Connexion : activation d'un Receiver sur un Sender, SDP, activation immédiate ou programmée. **v1.2 et v1.1** servies toutes deux | `registre.py` |
+| **IS-04** | Enregistrement et découverte : Node, Devices, Senders, Receivers, plus la découverte DNS-SD du registre de l'installation d'accueil | `__init__.py` (API Node), `registre.py` (registre et query embarqués), `decouverte.py`, `conteneur_node.py` |
+| **IS-05** | Connexion : activation d'un Receiver sur un Sender, SDP, activation immédiate ou programmée. **v1.2 et v1.1** servies toutes deux | `__init__.py` |
 | **IS-07** | Événements et tally, dans les deux sens — nous publions les nôtres, et nous consommons ceux d'un appareil tiers | `is07.py`, `is07_client.py`, `is07_entrant.py` |
 | **IS-09** | System Parameters : les constantes globales de l'installation | `is09.py` |
 | **IS-12** | Contrôle MS-05-02 sur WebSocket (port dédié 5010) | `is12.py`, `ncp.py`, `modele.py` |
 | **IS-14** | Le même modèle en REST, avec sauvegarde et restauration `bulkProperties` | `is14.py` |
 
 Plus les **BCP** : `002-01` (grouping, figé au registre), `002-02` (identité d'asset),
-`003-02` (autorisation), `004-01` (capacités de récepteur), `008-01` et `008-02`
-(moniteurs de santé des Receivers et Senders), `007-03` (exposition du bus MXL en IS-04/05).
+`004-01` (capacités de récepteur), `008-01` et `008-02` (moniteurs de santé des Receivers
+et Senders), `007-03` (exposition du bus MXL en IS-04/05).
+
+⚠ **BCP-003-02 (autorisation) n'est PAS implémentée.** Aucun jeton n'est vérifié, sur
+aucune des API — ni IS-04/05, ni IS-07, ni le port IS-12. Le service suppose un réseau de
+contrôle protégé, et il ne doit pas être exposé au-delà. Ce README a annoncé cette
+conformité à tort jusqu'au 2026-11-01.
 
 **BCP-007-03 « NMOS Support for MXL », v1.0.0** : le bus interne est publié sous son propre
 Device, distinct de l'I/O ST 2110 — deux surfaces, deux transports, deux autorités de routage.

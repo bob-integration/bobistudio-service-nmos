@@ -17,16 +17,21 @@ declares about itself.
 
 | Specification | What it brings | Where |
 |---|---|---|
-| **IS-04** | Registration and discovery: Node, Devices, Senders, Receivers, plus DNS-SD discovery of the host facility's registry | `registre.py`, `decouverte.py`, `conteneur_node.py` |
-| **IS-05** | Connection: activating a Receiver onto a Sender, SDP, immediate or scheduled activation. **Both v1.2 and v1.1** are served | `registre.py` |
+| **IS-04** | Registration and discovery: Node, Devices, Senders, Receivers, plus DNS-SD discovery of the host facility's registry | `__init__.py` (Node API), `registre.py` (embedded registry and query), `decouverte.py`, `conteneur_node.py` |
+| **IS-05** | Connection: activating a Receiver onto a Sender, SDP, immediate or scheduled activation. **Both v1.2 and v1.1** are served | `__init__.py` |
 | **IS-07** | Events and tally, both ways — we publish ours, and we consume a third party's | `is07.py`, `is07_client.py`, `is07_entrant.py` |
 | **IS-09** | System Parameters: the facility's global constants | `is09.py` |
 | **IS-12** | MS-05-02 control over WebSocket (dedicated port 5010) | `is12.py`, `ncp.py`, `modele.py` |
 | **IS-14** | The same model over REST, with `bulkProperties` backup and restore | `is14.py` |
 
 Plus the **BCPs**: `002-01` (grouping, frozen at registration), `002-02` (asset identity),
-`003-02` (authorization), `004-01` (receiver capabilities), `008-01` and `008-02` (Receiver
-and Sender health monitors), `007-03` (exposing the MXL bus through IS-04/05).
+`004-01` (receiver capabilities), `008-01` and `008-02` (Receiver and Sender health
+monitors), `007-03` (exposing the MXL bus through IS-04/05).
+
+⚠ **BCP-003-02 (authorization) is NOT implemented.** No token is verified, on any of the
+APIs — neither IS-04/05, nor IS-07, nor the IS-12 port. The service assumes a protected
+control network and must not be exposed beyond one. This README wrongly claimed this
+conformance until 2026-11-01.
 
 **BCP-007-03 "NMOS Support for MXL", v1.0.0**: the internal bus is published under its own
 Device, separate from the ST 2110 I/O — two surfaces, two transports, two routing authorities.
