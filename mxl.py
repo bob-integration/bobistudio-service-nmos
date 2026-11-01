@@ -159,8 +159,10 @@ def ports_of(container):
                 continue
             c = dict(p)
             slot = c.get("slot")
-            c["slot"] = int(slot) if isinstance(slot, int) else i
-            c["key"] = "%s:%d" % (_essence(c), c["slot"])
+            # Un slot QUALIFIÉ (`meter_blocks:0`, cf. plugins.qualified_lists) garde son texte :
+            # le rang `i` le ferait retomber sur l'identité d'une autre entrée.
+            c["slot"] = slot if isinstance(slot, int) or (isinstance(slot, str) and ":" in slot) else i
+            c["key"] = "%s:%s" % (_essence(c), c["slot"])
             out.append(c)
         return out
 
@@ -801,7 +803,8 @@ def _appliquer(st, flow_id_voulu, send_state):
         if not st.get("shm"):
             return True, 200, {}                     # déjà décâblé
         with verrou_vmid(to_vmid, op="nmos-mxl-unwire"):
-            ok, _s, _p = _apply_unwire(to_vmid, st["shm"], kind)
+            ok, _s, _p = _apply_unwire(to_vmid, st["shm"], kind,
+                                       st.get("slot") if _slotte(st) else None)
         if not ok:
             return False, 500, {"code": 500, "error": "décâblage refusé", "debug": str(_p)}
         st["shm"] = ""
