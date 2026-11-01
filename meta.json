@@ -1,7 +1,27 @@
 {
-  "version": "0.1.12",
-  "published_at": "2026-07-07",
+  "version": "0.4.3",
+  "published_at": "2026-11-01",
   "changes": {
+    "Un receiver de transport MXL ne va plus au registre (0.4.3)": [
+      "Un Receiver dont le transport est le bus MXL n'est plus poussé vers /nmos/subscribe. Il produisait 29 alertes « abonnement NON restauré » à chaque démarrage : le registre n'a rien à connecter sur un transport qui n'est pas le sien."
+    ],
+    "Conformité BCP-007-03 vérifiée par schéma (0.4.2)": [
+      "La conformité BCP-007-03 est désormais vérifiée contre le schéma, et non affirmée."
+    ],
+    "Le tally, le contrôle et l'identité d'un conteneur en NMOS (0.4.1)": [
+      "IS-07 : le tally est publié en NMOS, avec un Receiver par groupe de sortie et des Sources clées sur le niveau, puis POUSSÉ par le transport WebSocket.",
+      "Chaque conteneur devient un Node NMOS à part entière (« plan 2 »), et le bus MXL reçoit son propre Device IS-04, distinct du 2110.",
+      "IS-09 : les paramètres globaux de l'installation. IS-04/DNS-SD : le registre de l'installation d'accueil est découvert au lieu d'être configuré à la main.",
+      "Les statuts BCP-008 d'un appareil TIERS arrivent dans nos alertes, et une collision de grouping BCP-002-01 se voit en exploitation plutôt que dans un banc.",
+      "L'onglet devient autonome et se range en cinq sous-onglets. Correction de réglages booléens sans effet, et retrait de trois codes morts."
+    ],
+    "Socle de contrôle MS-05-02, servi par IS-12 et IS-14 (0.4.0)": [
+      "Socle de CONTRÔLE MS-05-02 : un modèle vivant publié par deux transports — IS-12 (WebSocket, port dédié) et IS-14 (REST sous /x-nmos/configuration/, avec sauvegarde/restauration bulkProperties) — plus les monitors BCP-008 des Rx/Tx."
+    ],
+    "⚠ Numérotation : ce journal a bifurqué du manifeste (note du 2026-11-01)": [
+      "Les sections 0.1.4 à 0.1.12 ci-dessous portent des numéros que le MANIFESTE n'a jamais annoncés : il est allé de 0.1.0 à 0.1.3, puis directement à 0.4.0. Le manifeste fait foi — c'est lui que le Catalogue lit et qui décide ce qui s'installe. Ces sections décrivent donc du travail réel sous une numérotation qui n'a jamais été publiée ; on les garde telles quelles plutôt que de les renuméroter après coup.",
+      "Les quatre sections 0.4.x ci-dessus sont RECONSTITUÉES depuis les sujets de commit qui ont posé chaque version (8c2003f à 5621581), le journal s'étant arrêté au moment de la bifurcation."
+    ],
     "Nouveautés (0.1.12)": [
       "Sonde probe_2110 : l'abonnement RX (manual_subscribe → chaîne IS-05) et son re-push après (re)déploiement ciblent désormais le contrat agent sur le bon port. Une sonde qui coexiste avec un moteur sur le même nœud (banc de conformité loopback, --network host) offsette ses ports contrôleur (CONTROLLER_PORT_BASE) → _notify_agent et repush_subscriptions passent par deploy.agent_port(vmid) (= :base+1) au lieu de :8081 en dur. Un moteur/receiver mono-nœud reste sur :8081 (offset défaut 0), comportement inchangé. (rebuild_model / bindable_containers reconnaissaient DÉJÀ la sonde comme porteuse de receivers via son manifeste nmos_role=receiver — aucun == \"2110_io\" codé en dur à étendre.)"
     ],
