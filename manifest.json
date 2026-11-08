@@ -1,6 +1,7 @@
 {
   "id": "nmos",
   "label": "NMOS",
+  "help": {"category": "interop"},
   "nav_tab": "nmos",
   "tab_order": 0,
   "tab_template": "nmos/settings_tab.html",
