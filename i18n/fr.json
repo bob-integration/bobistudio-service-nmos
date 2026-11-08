@@ -54,6 +54,7 @@
   "service.nmos.importer": "Importer…",
   "service.nmos.inactif_n_est_pas_une_panne_c_est_un_rec": "<b>Inactif</b> n'est pas une panne : c'est un Receiver sans abonnement IS-05 ou un slot de sortie sans cadence demandée. Les drapeaux de contenu (image figée, noir, silence) ne dégradent le flux que s'ils sont <b>armés sur la source</b> (page I/O Sources) — une mire figée volontairement reste saine.",
   "service.nmos.indispensable_des_qu_un_second_moteur_21": "Indispensable dès qu'un <b>second moteur 2110</b> rejoint le cluster : sans préfixe distinct, deux nœuds exposent chacun un « Rx 1 » indiscernable pour un contrôleur tiers.",
+  "service.nmos.install_why": "Interop broadcast : IS-04/05 (découverte et connexion), contrôle MS-05-02. ⚠ Annonce nos ressources en mDNS sur le réseau de contrôle.",
   "service.nmos.is07.ajouter": "+ Ajouter une connexion",
   "service.nmos.is07.aucun_controleur": "aucun contrôleur ne l'a activée",
   "service.nmos.is07.aucun_niveau": "aucun niveau",

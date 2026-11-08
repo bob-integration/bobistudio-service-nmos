@@ -54,6 +54,7 @@
   "service.nmos.importer": "Import…",
   "service.nmos.inactif_n_est_pas_une_panne_c_est_un_rec": "<b>Inactive</b> is not a fault: it is a Receiver with no IS-05 subscription, or an output slot with no requested rate. Content flags (frozen picture, black, silence) only degrade the stream if they are <b>armed on the source</b> (I/O Sources page) — a deliberately frozen test pattern stays healthy.",
   "service.nmos.indispensable_des_qu_un_second_moteur_21": "Essential as soon as a <b>second 2110 engine</b> joins the cluster: without a distinct prefix, two nodes each expose an “Rx 1” that a third-party controller cannot tell apart.",
+  "service.nmos.install_why": "Broadcast interop: IS-04/05 (discovery and connection), MS-05-02 control. ⚠ Announces our resources over mDNS on the control network.",
   "service.nmos.is07.ajouter": "+ Add a connection",
   "service.nmos.is07.aucun_controleur": "no controller has activated it",
   "service.nmos.is07.aucun_niveau": "no level",

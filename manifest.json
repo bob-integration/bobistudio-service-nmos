@@ -3,6 +3,7 @@
   "label": "NMOS",
   "help": {"category": "interop"},
   "nav_tab": "nmos",
+  "install_offer": "off",
   "tab_order": 0,
   "tab_template": "nmos/settings_tab.html",
   "settings_keys": {
