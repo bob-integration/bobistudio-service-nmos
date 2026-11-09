@@ -1,7 +1,10 @@
 {
-  "version": "0.4.3",
+  "version": "0.4.4",
   "published_at": "2026-11-01",
   "changes": {
+    "Version minimale du cœur déclarée (0.4.4)": [
+      "Le manifeste déclare `requires.core_min` = 0.9.14 : l'orchestrateur refuse de l'installer sur un cœur plus ancien et le dit. Valeur = le cœur avec lequel le code actuel a été fait ; le service tourne DANS l'orchestrateur et importe `app.*`."
+    ],
     "Un receiver de transport MXL ne va plus au registre (0.4.3)": [
       "Un Receiver dont le transport est le bus MXL n'est plus poussé vers /nmos/subscribe. Il produisait 29 alertes « abonnement NON restauré » à chaque démarrage : le registre n'a rien à connecter sur un transport qui n'est pas le sien."
     ],
