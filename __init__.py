@@ -24,10 +24,12 @@ Settings (table `settings`) :
 - nmos_node_description (string)
 - nmos_host_address (string) — IP/host annoncée comme href du Node
 """
+import ipaddress
 import json
 from app.numerotation import slot_tx, slot_rx, numero, indice, cle_tx_shm
 import logging
 import re
+import shlex
 import socket
 import threading
 import time
@@ -2317,6 +2319,44 @@ _AUTO_ACTIVATE_HTTP_TIMEOUT = 2  # timeout par requête HTTP (curl) vers le devi
 _KNOWN_NMOS_API_PORTS = (8090, 8092, 8094, 8096, 8098, 8100, 8102, 8104)
 
 
+# An SDP, a sender id or a manifest URL comes from the network (unauthenticated IS-05 PATCH,
+# or a remote device answering us) and ends up in a command line run on a node: each value is
+# reduced to its canonical form here, or dropped.
+def _safe_ipv4(value):
+    """Canonical dotted-quad of `value`, or None if it is not an IPv4 literal."""
+    try:
+        return str(ipaddress.IPv4Address(value)) if isinstance(value, str) else None
+    except ValueError:
+        return None
+
+
+def _safe_port(value):
+    """`value` as an int in 1..65535, or None."""
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return None
+    return port if 0 < port < 65536 and not isinstance(value, bool) else None
+
+
+def _safe_uuid(value):
+    """Canonical lowercase form of `value`, or None if it is not written as a plain UUID."""
+    if not isinstance(value, str):
+        return None
+    try:
+        canon = str(uuid.UUID(value))
+    except ValueError:
+        return None
+    return canon if canon == value.lower() else None
+
+
+def _safe_http_url(value):
+    """`value` if it is an absolute http(s) URL without blank or control character, else None."""
+    if not isinstance(value, str) or not re.fullmatch(r"https?://[!-~]+", value):
+        return None
+    return value
+
+
 def _sdp_endpoint(sdp):
     """Lit (ip_source, ip_multicast, port) d'un SDP RX vidéo 2110-20 — `a=source-filter` prime sur
     `o=` (plus fiable, cf. devices dont le `o=`/self-report est faux, [[io2110-blackmagic-is05-sender-activation]])."""
@@ -2331,6 +2371,10 @@ def _sdp_endpoint(sdp):
     port = None
     ml = re.search(r"^m=\S+ (\d+)", sdp, re.M)
     if ml: port = int(ml.group(1))
+    if (src_ip, mcast_ip, port) != (_safe_ipv4(src_ip), _safe_ipv4(mcast_ip), _safe_port(port)):
+        log.warning("nmos: SDP endpoint ignored, not an IPv4 address / valid port: "
+                    "source=%.64r group=%.64r port=%r", src_ip, mcast_ip, port)
+        src_ip, mcast_ip, port = _safe_ipv4(src_ip), _safe_ipv4(mcast_ip), _safe_port(port)
     return src_ip, mcast_ip, port
 
 
@@ -2348,11 +2392,20 @@ def _node_host_for_vmid(vmid):
     return node.get("host") if node else None
 
 
+def _curl_cmd(url, timeout, *options):
+    """Command line of a curl call run on a node. Every word is quoted on its own: `url` and
+    the options carry data received from the network. `--` and `--proto` keep a value from
+    being read as an option or as a local file."""
+    argv = ["curl", "-s", "-m", "%g" % timeout, "--proto", "=http,https", *options, "--", url]
+    return " ".join(shlex.quote(str(a)) for a in argv)
+
+
 def _curl_json(host, url, timeout=_AUTO_ACTIVATE_HTTP_TIMEOUT):
     """GET JSON via curl exécuté SUR `host` (SSH/agent, cf. `_node_host_for_vmid`). None si
     rc != 0 ou réponse non-JSON."""
     from app.host_ops import ssh_run
-    rc, out, _ = ssh_run(host, f"curl -s -m {timeout} '{url}'", timeout=timeout + 5)
+    timeout = float(timeout)
+    rc, out, _ = ssh_run(host, _curl_cmd(url, timeout), timeout=timeout + 5)
     if rc != 0 or not out:
         return None
     try:
@@ -2363,15 +2416,16 @@ def _curl_json(host, url, timeout=_AUTO_ACTIVATE_HTTP_TIMEOUT):
 
 def _curl_text(host, url, timeout=_AUTO_ACTIVATE_HTTP_TIMEOUT):
     from app.host_ops import ssh_run
-    rc, out, _ = ssh_run(host, f"curl -s -m {timeout} '{url}'", timeout=timeout + 5)
+    timeout = float(timeout)
+    rc, out, _ = ssh_run(host, _curl_cmd(url, timeout), timeout=timeout + 5)
     return out if rc == 0 and out else None
 
 
 def _curl_patch(host, url, body, timeout=_AUTO_ACTIVATE_HTTP_TIMEOUT):
     from app.host_ops import ssh_run
-    payload = json.dumps(body).replace("'", "'\\''")
-    cmd = (f"curl -s -o /dev/null -w '%{{http_code}}' -m {timeout} -X PATCH "
-           f"-H 'Content-Type: application/json' -d '{payload}' '{url}'")
+    timeout = float(timeout)
+    cmd = _curl_cmd(url, timeout, "-o", "/dev/null", "-w", "%{http_code}", "-X", "PATCH",
+                    "-H", "Content-Type: application/json", "-d", json.dumps(body))
     rc, out, err = ssh_run(host, cmd, timeout=timeout + 5)
     return rc == 0 and (out or "").strip().startswith("2")
 
@@ -2383,14 +2437,24 @@ def _try_activate_sender_on_ports(host, vmid, recv_idx, src_ip, mcast_ip, port, 
     ET par l'activation manuelle) :
     {matched: bool, activated: bool, already_active: bool, sender_id, base, tried_ports}."""
     tried = []
+    # Checked again here, not only where the SDP is parsed: this is where the URL is built.
+    if _safe_ipv4(src_ip) is None:
+        log.warning("nmos: remote sender activation skipped, source is not an IPv4 address: %.64r", src_ip)
+        node_ports = ()
     for node_port in node_ports:
+        node_port = _safe_port(node_port)
+        if node_port is None:
+            continue
         base = f"http://{src_ip}:{node_port}"
         tried.append(node_port)
         senders = _curl_json(host, f"{base}/x-nmos/node/v1.3/senders/")
-        if not senders:
+        if not isinstance(senders, list):
             continue
         for snd in senders:
-            sid, href = snd.get("id"), snd.get("manifest_href")
+            if not isinstance(snd, dict):
+                continue
+            # Both fields are whatever the remote device chose to answer.
+            sid, href = _safe_uuid(snd.get("id")), _safe_http_url(snd.get("manifest_href"))
             if not sid or not href:
                 continue
             sdp_text = _curl_text(host, href)
