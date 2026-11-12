@@ -1,7 +1,10 @@
 {
-  "version": "0.4.4",
-  "published_at": "2026-11-01",
+  "version": "0.4.5",
+  "published_at": "2026-11-12",
   "changes": {
+    "Correctif de sécurité (0.4.5)": [
+      "Les valeurs reçues du réseau (SDP d'une connexion IS-05, identifiant et URL de manifeste d'un sender distant) sont validées avant d'être passées à une commande sur le nœud. Une valeur hors de sa forme attendue est abandonnée."
+    ],
     "Version minimale du cœur déclarée (0.4.4)": [
       "Le manifeste déclare `requires.core_min` = 0.9.14 : l'orchestrateur refuse de l'installer sur un cœur plus ancien et le dit. Valeur = le cœur avec lequel le code actuel a été fait ; le service tourne DANS l'orchestrateur et importe `app.*`."
     ],
